@@ -1,0 +1,9 @@
+credentials/
+data/samples/
+data/*.xls
+data/proposal_demo.json
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+token.json

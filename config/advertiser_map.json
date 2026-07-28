@@ -1,0 +1,22 @@
+{
+  "_comment": "Advertiser resolution PROTOTYPE. Matched by URL path segments (anchor), ignoring /lp2/2026/c1/-style prefixes and utm. Longest anchor wins. To be finalized when testing on production. 'host' rules are for the test account.",
+  "rules": [
+    { "host": "mediaszop.netlify.app", "advertiserId": "11992166", "advertiser": "Reklamodawca testowy - na potrzeby szkolenia", "profileId": "9556074", "anchor": [] },
+
+    { "anchor": ["indywidualny", "ubezpieczenia"], "advertiserId": "9081506", "advertiser": "CG Indywidualny - Ubezpieczenia", "profileId": "9765911" },
+    { "anchor": ["indywidualny", "konta"],          "advertiserId": "9080582", "advertiser": "CG Indywidualny - Konta",          "profileId": "9765911" },
+    { "anchor": ["indywidualny", "kredyty"],        "advertiserId": "9081500", "advertiser": "CG Indywidualny - Kredyty",        "profileId": "9765911" },
+    { "anchor": ["indywidualny", "inwestycje"],     "advertiserId": "12798457","advertiser": "CG Indywidualny - Inwestycje",     "profileId": "9765911" },
+    { "anchor": ["indywidualny", "karty"],          "advertiserId": "9600236", "advertiser": "CG Indywidualny - Karty",          "profileId": "9765911" },
+    { "anchor": ["indywidualny", "uslugi"],         "advertiserId": "9524778", "advertiser": "CG Indywidualny - Uslugi",         "profileId": "9765911" },
+    { "anchor": ["firmy", "konta"],                 "advertiserId": "9091477", "advertiser": "CG Firmy - Konta",                 "profileId": "9765911" },
+    { "anchor": ["firmy", "kredyty"],               "advertiserId": "9067422", "advertiser": "CG Firmy - Kredyty",               "profileId": "9765911" },
+    { "anchor": ["firmy", "ksiegowosc"],            "advertiserId": "9081503", "advertiser": "CG Firmy - Ksiegowosc",            "profileId": "9765911" },
+    { "anchor": ["firmy", "zakladanie-firmy"],      "advertiserId": "9200231", "advertiser": "CG Firmy - Zakladanie firmy",      "profileId": "9765911" },
+    { "anchor": ["korporacje", "konta"],            "advertiserId": "9067410", "advertiser": "CG Korporacje - konta",            "profileId": "9765911" },
+
+    { "anchor": ["intensive"], "advertiserId": "9188426", "advertiser": "CG Intensive - Konta", "profileId": "9765911", "_note": "CONFLICT: example link is /indywidualny/konta/intensive/... which also matches indywidualny/konta. Needs a disambiguation rule at go-live." },
+    { "anchor": ["mleasing"],  "advertiserId": "14924722","advertiser": "CG mLeasing",  "profileId": "9765911", "_note": "anchor guessed; confirm real URL pattern at go-live" },
+    { "anchor": ["mprodukty"], "advertiserId": "9271638", "advertiser": "CG mProdukty", "profileId": "9765911", "_note": "anchor guessed; confirm real URL pattern at go-live" }
+  ]
+}

@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CM Worker — weryfikacja struktury</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg:#f4f5f7; --panel:#fff; --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb;
+      --new:#16a34a; --new-bg:#dcfce7; --exist:#64748b; --exist-bg:#eef2f6;
+      --accent:#4f46e5; --accent-bg:#eef2ff; --danger:#dc2626;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      background:var(--bg); color:var(--ink); }
+    header { background:var(--panel); border-bottom:1px solid var(--line);
+      padding:14px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+    header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:.2px; }
+    .wrap { max-width:1000px; margin:20px auto; padding:0 16px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+      padding:16px 18px; margin-bottom:16px; }
+    .meta { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; align-items:center; }
+    .meta .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
+    .badge { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px;
+      border-radius:999px; vertical-align:middle; }
+    .badge.new { color:var(--new); background:var(--new-bg); }
+    .badge.existing { color:var(--exist); background:var(--exist-bg); }
+    .node { border-radius:8px; }
+    .site { border:1px solid var(--line); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+    .site > .row { background:#fafbfc; padding:10px 14px; font-weight:700; }
+    .placement { margin:8px 10px 12px 10px; border:1px dashed var(--line); border-radius:8px; }
+    .placement > .row { padding:8px 12px; background:#fcfcfd; font-weight:600; border-bottom:1px solid var(--line); }
+    .ad-block { border-bottom:1px solid #f1f2f4; }
+    .ad-block:last-child { border-bottom:none; }
+    .ad { display:flex; align-items:center; gap:10px; padding:7px 12px 4px 14px; cursor:grab; }
+    .ad.over { box-shadow: inset 0 2px 0 var(--accent); }
+    .cre-list { padding: 0 12px 6px 44px; }
+    .cre-wrap { padding: 3px 0; border-top: 1px dashed #f1f2f4; }
+    .cre-wrap:first-child { border-top: none; }
+    .cre-row { display:flex; align-items:center; gap:10px; }
+    .cre-lp { padding-left: 28px; font-size: 12.5px; }
+    .cre-lp input { font:inherit; padding:3px 7px; border:1px solid var(--line); border-radius:6px; }
+    .grip { color:#c3c8d0; font-size:15px; }
+    .arrow { color:var(--muted); }
+    .icon { width:18px; text-align:center; }
+    .name { font-weight:600; }
+    .cre { color:#374151; }
+    .spacer { flex:1; }
+    .btn { border:1px solid var(--line); background:#fff; border-radius:7px; padding:6px 11px;
+      font-size:13px; cursor:pointer; color:var(--ink); }
+    .btn:hover { background:#f7f8fa; }
+    .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .btn.primary:hover { filter:brightness(1.05); }
+    .btn.mini { padding:2px 7px; font-size:12px; }
+    .btn.link { border:none; background:none; color:var(--accent); padding:2px 6px; }
+    .btn.del { color:var(--danger); }
+    .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .edit { font:inherit; border:1px solid var(--accent); border-radius:5px; padding:1px 6px; }
+    .editable:hover { background:#fffbe6; border-radius:4px; outline:1px dashed #e3d38a; cursor:text; }
+    .hint { color:var(--muted); font-size:12px; }
+    .tagbar { font-weight:700; }
+    pre { background:#0f172a; color:#e2e8f0; padding:14px; border-radius:8px; overflow:auto;
+      font-size:12px; max-height:340px; }
+    select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; }
+    .lines-title { font-weight:700; margin-bottom:10px; }
+    .curbox { border:1px solid var(--accent); background:var(--accent-bg); border-radius:8px;
+      padding:10px 12px; margin-bottom:14px; }
+    .curbox .lead { font-weight:700; color:var(--accent); margin-bottom:4px; }
+    .line-grp { border:1px solid var(--line); border-radius:8px; margin-bottom:8px; overflow:hidden; }
+    .line-grp.used { border-color:var(--accent); }
+    .line-hdr { padding:6px 12px; background:#fafbfc; font-weight:700; display:flex; gap:8px; align-items:center; }
+    .line-grp.used .line-hdr { background:var(--accent-bg); }
+    .variant { padding:6px 12px; border-top:1px solid #f1f2f4; display:flex; gap:10px; align-items:baseline; }
+    .variant .vname { font-weight:600; min-width:110px; }
+    .url { color:#2563eb; font-size:12.5px; word-break:break-all; text-decoration:none; }
+    .url:hover { text-decoration:underline; }
+    .tag-use { font-size:11px; font-weight:700; color:var(--accent); background:#fff; border:1px solid var(--accent);
+      border-radius:999px; padding:1px 8px; }
+    .qcard { border:1px solid #f0c36d; background:#fffaf0; border-radius:10px; padding:14px 16px; margin-bottom:16px; }
+    .qcard .lead { font-weight:800; color:#a15c00; margin-bottom:10px; }
+    .q { padding:8px 0; border-top:1px dashed #f0d9a8; }
+    .q:first-of-type { border-top:none; }
+    .q-prompt { font-weight:600; margin-bottom:6px; }
+    .q-opt { display:flex; gap:8px; align-items:flex-start; padding:3px 0; cursor:pointer; }
+    .q-note { color:#8a6d3b; font-size:12px; margin-top:4px; }
+    .q-detail { font-size:12px; margin-top:6px; }
+    .q-detail .u { color:#2563eb; word-break:break-all; }
+    .form { display:grid; gap:10px; max-width:720px; }
+    .form label { display:grid; gap:4px; font-size:12px; color:var(--muted); font-weight:600; }
+    .form input[type=text], .form input:not([type]), .form textarea, .form select {
+      font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:7px; color:var(--ink); }
+    .form textarea { resize:vertical; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    function EditableText({ value, onChange, className }) {
+      const [editing, setEditing] = useState(false);
+      const [v, setV] = useState(value);
+      React.useEffect(() => setV(value), [value]);
+      if (editing) {
+        return <input className="edit" autoFocus value={v}
+          onChange={e => setV(e.target.value)}
+          onBlur={() => { setEditing(false); onChange(v); }}
+          onKeyDown={e => { if (e.key === 'Enter') { setEditing(false); onChange(v); }
+                            if (e.key === 'Escape') { setEditing(false); setV(value); } }} />;
+      }
+      return <span className={"editable " + (className || "")}
+        title="Kliknij, aby edytować" onClick={() => setEditing(true)}>{value}</span>;
+    }
+
+    const Badge = ({ s }) => <span className={"badge " + s}>{s === 'new' ? 'nowe' : 'istnieje'}</span>;
+
+    function QuestionsPanel({ questions, answers, onAnswer }) {
+      if (!questions.length) return null;
+      const toggle = (id, val) => {
+        const cur = answers[id] || [];
+        onAnswer(id, cur.includes(val) ? cur.filter(x => x !== val) : [...cur, val]);
+      };
+      return (
+        <div className="qcard">
+          <div className="lead">❓ Do rozstrzygnięcia ({questions.length}) — odpowiedzi sterują drzewem poniżej</div>
+          {questions.map(q => (
+            <div className="q" key={q.id}>
+              <div className="q-prompt">{q.prompt}</div>
+              {q.options.map(o => (
+                <label className="q-opt" key={o.value}>
+                  <input
+                    type={q.type === 'multi_choice' ? 'checkbox' : 'radio'}
+                    name={q.id}
+                    checked={q.type === 'multi_choice' ? (answers[q.id] || []).includes(o.value) : answers[q.id] === o.value}
+                    onChange={() => q.type === 'multi_choice' ? toggle(q.id, o.value) : onAnswer(q.id, o.value)} />
+                  <span>{o.label}</span>
+                </label>
+              ))}
+              {q.note && <div className="q-note">ℹ️ {q.note}</div>}
+              {q.detail && (
+                <div className="q-detail">
+                  {q.detail.existingLpName && <div>istnieje <b>{q.detail.existingLpName}</b>: <span className="u">{q.detail.existing}</span></div>}
+                  {q.detail.new && <div>nowy: <span className="u">{q.detail.new}</span></div>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function LinesPanel({ line, source, existing }) {
+      const reused = !!line.reusedLine;
+      const curNo = line.number;
+      const hasCurInExisting = existing.some(l => l.number === curNo);
+      return (
+        <div className="card">
+          <div className="lines-title">🔗 Linie w kampanii</div>
+
+          <div className="curbox">
+            <div className="lead">
+              {reused
+                ? `✅ Używamy istniejącej linii ${curNo}`
+                : `➕ Dodajemy nową linię ${curNo}`}
+            </div>
+            <div>Creative: <b>{line.creativeName}</b> · Landing page: <b>{line.lpName}</b>
+              <span className="hint"> · źródło {source} · ścieżka {line.path}</span></div>
+            {line.url && <div style={{ marginTop: 4 }}><a className="url" href={line.url} target="_blank">{line.url}</a></div>}
+          </div>
+
+          <div className="hint" style={{ marginBottom: 6 }}>
+            Istniejące linie ({existing.length}){existing.length ? ' — pełne adresy:' : ' — brak (kampania bez linii)'}
+          </div>
+
+          {existing.map(l => {
+            const used = reused && l.number === curNo;
+            return (
+              <div className={"line-grp" + (used ? " used" : "")} key={l.number}>
+                <div className="line-hdr">
+                  linia{l.number}
+                  {used && <span className="tag-use">← używamy tej linii</span>}
+                </div>
+                {l.variants.map((v, i) => (
+                  <div className="variant" key={i}>
+                    <span className="vname">{v.lpName}</span>
+                    <a className="url" href={v.url} target="_blank">{v.url}</a>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+
+          {!reused && !hasCurInExisting &&
+            <div className="line-grp used">
+              <div className="line-hdr">linia{curNo} <span className="tag-use">← dodajemy (nowa)</span></div>
+              <div className="variant">
+                <span className="vname">{line.lpName}</span>
+                <a className="url" href={line.url} target="_blank">{line.url || '(adres z bieżącego linku)'}</a>
+              </div>
+            </div>}
+        </div>
+      );
+    }
+
+    function CampaignBrowser({ onPick }) {
+      const [campaigns, setCampaigns] = useState(null);
+      const [openId, setOpenId] = useState(null);
+      const [lpsById, setLpsById] = useState({});
+      const [lpBusy, setLpBusy] = useState(null);
+
+      useEffect(() => {
+        fetch('/api/campaigns').then(r => r.json())
+          .then(d => setCampaigns(d.campaigns || []))
+          .catch(() => setCampaigns([]));
+      }, []);
+
+      const toggle = async (c) => {
+        if (openId === c.id) { setOpenId(null); return; }
+        setOpenId(c.id);
+        if (!lpsById[c.id]) {
+          setLpBusy(c.id);
+          try {
+            const r = await fetch('/api/campaign-lps?campaignId=' + encodeURIComponent(c.id));
+            const d = await r.json();
+            setLpsById(s => ({ ...s, [c.id]: d.landingPages || [] }));
+          } catch (e) { setLpsById(s => ({ ...s, [c.id]: [] })); }
+          setLpBusy(null);
+        }
+      };
+
+      if (campaigns === null) return <div className="hint">Ładowanie listy kampanii…</div>;
+      return (
+        <div style={{ marginTop: 8 }}>
+          <div className="hint" style={{ marginBottom: 6 }}>
+            Kampanie tego advertisera ({campaigns.length}) — kliknij nazwę, aby zobaczyć strony docelowe:
+          </div>
+          {campaigns.map(c => (
+            <div key={c.id} style={{ border: '1px solid var(--line)', borderRadius: 8, marginBottom: 6, overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', cursor: 'pointer', background: '#fafbfc' }}
+                onClick={() => toggle(c)}>
+                <span>{openId === c.id ? '▾' : '▸'}</span>
+                <b>{c.name}</b> <span className="hint">id={c.id}</span>
+                <div style={{ flex: 1 }} />
+                <button className="btn mini" onClick={e => { e.stopPropagation(); onPick(c.id); }}>Użyj tej kampanii</button>
+              </div>
+              {openId === c.id && (
+                <div style={{ padding: '6px 10px' }}>
+                  {lpBusy === c.id && <div className="hint">Ładowanie stron docelowych…</div>}
+                  {lpsById[c.id] && lpsById[c.id].length === 0 && <div className="hint">Brak stron docelowych w tej kampanii.</div>}
+                  {(lpsById[c.id] || []).map((lp, i) => (
+                    <div key={i} style={{ padding: '2px 0' }}>
+                      <span style={{ fontWeight: 600 }}>{lp.name}</span>{' '}
+                      <a className="url" href={lp.url} target="_blank" rel="noreferrer">{lp.url}</a>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function InputPanel({ onResult }) {
+      const [link, setLink] = useState('');
+      const [source, setSource] = useState('GDN');
+      const [message, setMessage] = useState('');
+      const [file, setFile] = useState(null);
+      const [busy, setBusy] = useState(false);
+      const [note, setNote] = useState('');
+      const [showSites, setShowSites] = useState(false);
+      const [siteQ, setSiteQ] = useState('');
+      const [siteRes, setSiteRes] = useState(null);
+      const [siteNote, setSiteNote] = useState('');
+      const searchSites = async () => {
+        setSiteNote('Szukam…'); setSiteRes(null);
+        try {
+          const r = await fetch('/api/sites?q=' + encodeURIComponent(siteQ));
+          setSiteRes(await r.json()); setSiteNote('');
+        } catch (e) { setSiteNote('Błąd: ' + e); }
+      };
+      const addSite = async () => {
+        const name = prompt('Nazwa nowego site (Site Directory):', siteQ);
+        if (!name) return;
+        const url = prompt('URL site:', 'https://');
+        const r = await fetch('/api/create-site', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, url }),
+        });
+        const d = await r.json();
+        setSiteNote(d.note || JSON.stringify(d));
+      };
+      const [suggestData, setSuggestData] = useState(null);
+      const runAnalyze = async (extra) => {
+        if (!link || !file) { setNote('Podaj adres LP i wybierz plik .zip'); return; }
+        setBusy(true); setNote(''); setSuggestData(null);
+        try {
+          const b64 = await new Promise((res, rej) => {
+            const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
+            r.readAsDataURL(file);
+          });
+          const resp = await fetch('/api/build-proposal', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ link, source, message, zipB64: b64, zipName: file.name, ...(extra || {}) }),
+          });
+          const data = await resp.json();
+          if (data.error) setNote('Błąd: ' + data.error);
+          else if (data.suggestNewCampaign) { setSuggestData(data); setNote(''); }
+          else { onResult(data); setNote('Zbudowano propozycję ✓'); }
+        } catch (e) { setNote('Błąd (uruchom przez serve.py, nie http.server): ' + e); }
+        setBusy(false);
+      };
+      const analyze = () => runAnalyze();
+      return (
+        <div className="card">
+          <div className="lines-title">📝 Nowe zlecenie</div>
+          <div className="form">
+            <label>Adres LP
+              <input type="text" value={link} onChange={e => setLink(e.target.value)}
+                placeholder="https://www.mbank.pl/lp2/2026/c1/..." /></label>
+            <label>Źródło
+              <select value={source} onChange={e => setSource(e.target.value)}>
+                {['GDN', 'Meta', 'Facebook', 'DemGen', 'Programmatic', 'Mailing'].map(s => <option key={s}>{s}</option>)}
+              </select></label>
+            <div>
+              <button className="btn mini" onClick={() => setShowSites(s => !s)}>
+                {showSites ? '▾' : '▸'} Nie ma źródła na liście? Szukaj/dodaj site (jak w CM)</button>
+              {showSites && (
+                <div style={{ border: '1px solid var(--line)', borderRadius: 8, padding: 10, marginTop: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input type="text" value={siteQ} onChange={e => setSiteQ(e.target.value)}
+                      placeholder="szukaj po nazwie…" style={{ flex: 1 }} />
+                    <button className="btn mini" onClick={searchSites}>Szukaj</button>
+                  </div>
+                  {siteNote && <div className="hint" style={{ marginTop: 6 }}>{siteNote}</div>}
+                  {siteRes && (
+                    <div style={{ marginTop: 8 }}>
+                      <div className="hint">Na koncie ({siteRes.account.length}):</div>
+                      {siteRes.account.map(s => <div key={s.id}>🟢 {s.name} <span className="hint">id={s.id}</span></div>)}
+                      <div className="hint" style={{ marginTop: 6 }}>Site Directory ({siteRes.directory.length}):</div>
+                      {siteRes.directory.slice(0, 8).map(s => <div key={s.id}>📁 {s.name} <span className="hint">{s.url}</span></div>)}
+                      <div style={{ marginTop: 8 }}>
+                        <button className="btn mini" onClick={addSite}>Nie ma? Dodaj do Site Directory</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <label>Materiały (.zip)
+              <input type="file" accept=".zip" onChange={e => setFile(e.target.files[0])} /></label>
+            <label>Wiadomość zlecenia (opcjonalnie)
+              <textarea rows="3" value={message} onChange={e => setMessage(e.target.value)}
+                placeholder="np. prośba o kody GDN dla formatów z załącznika..." /></label>
+            <div>
+              <button className="btn primary" disabled={busy} onClick={analyze}>
+                {busy ? 'Analizuję…' : 'Analizuj → zbuduj propozycję'}</button>
+              {note && <span className="hint" style={{ marginLeft: 10 }}>{note}</span>}
+            </div>
+            {suggestData && (
+              <div className="qcard">
+                <div className="lead">🆕 Brak kampanii z pasującą ścieżką dla „{suggestData.advertiser}”</div>
+                <div className="hint" style={{ marginBottom: 8 }}>
+                  Możesz ręcznie przejrzeć istniejące kampanie i ich strony docelowe poniżej —
+                  jeśli któraś jednak pasuje, kliknij „Użyj tej kampanii”. W przeciwnym razie
+                  utwórz nową kampanię (osobny krok).
+                </div>
+                <CampaignBrowser onPick={cid => runAnalyze({ campaignId: cid })} />
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function AddPicker({ label, options, optionLabel, onPick, onAddNew, placeholder }) {
+      const [open, setOpen] = useState(false);
+      const [text, setText] = useState('');
+      if (!open) return <button className="btn link mini" onClick={() => setOpen(true)}>{label}</button>;
+      return (
+        <div style={{ display: 'inline-block', border: '1px solid var(--line)', borderRadius: 8,
+                      padding: 8, margin: '4px 0', background: '#fff', verticalAlign: 'top' }}>
+          {options.length > 0 && <div className="hint" style={{ marginBottom: 4 }}>Istniejące w tej kampanii:</div>}
+          <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+            {options.map((o, i) => (
+              <button key={i} className="btn mini" style={{ display: 'block', marginBottom: 3, width: '100%', textAlign: 'left' }}
+                onClick={() => { onPick(o); setOpen(false); }}>{optionLabel(o)}</button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <input type="text" value={text} onChange={e => setText(e.target.value)}
+              placeholder={placeholder} style={{ flex: 1, minWidth: 120 }} />
+            <button className="btn mini"
+              onClick={() => { if (text.trim()) { onAddNew(text.trim()); setText(''); setOpen(false); } }}>Dodaj nowy</button>
+            <button className="btn mini" onClick={() => setOpen(false)}>Anuluj</button>
+          </div>
+        </div>
+      );
+    }
+
+    function CreativeRow({ cr, lineLp, onRename, onDelete, onSetLP, onClearLP, onApplyToAll }) {
+      const [editing, setEditing] = useState(false);
+      const [lpN, setLpN] = useState('');
+      const [lpU, setLpU] = useState('');
+      const origNameRef = useRef(cr.name);  // name this row had when it first appeared — lets
+                                            // "Zastosuj do wszystkich" detect a rename vs a plain add
+      const effName = cr.lpName || lineLp.lpName;
+      const effUrl = cr.lpName ? (cr.lpUrl || '') : (lineLp.url || '');
+      const startEdit = () => { setLpN(effName); setLpU(effUrl); setEditing(true); };
+      return (
+        <div className="cre-wrap">
+          <div className="cre-row">
+            <span className="arrow">→</span>
+            <span className="icon">🖼️</span>
+            <span className="cre"><EditableText value={cr.name} onChange={onRename} /></span>
+            <Badge s={cr.status} />
+            <span className="hint">{cr.type}</span>
+            <button className="btn link mini" title="Dodaje/przemianowuje ten creative na wszystkich adsach w strukturze"
+              onClick={() => onApplyToAll(origNameRef.current, cr)}>🔁 zastosuj do wszystkich</button>
+            <div className="spacer" />
+            <button className="btn mini del" onClick={onDelete}>×</button>
+          </div>
+          <div className="cre-lp">
+            {!editing && (
+              <span className="hint">
+                LP: <b>{effName}</b> {cr.lpName ? '(własny)' : '(linia)'}
+                {' · '}<button className="btn link mini" onClick={startEdit}>
+                  {cr.lpName ? 'edytuj' : 'ustaw własny LP'}</button>
+                {cr.lpName && <button className="btn link mini" onClick={onClearLP}>usuń własny (użyj LP linii)</button>}
+              </span>
+            )}
+            {editing && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '4px 0' }}>
+                <input type="text" value={lpN} onChange={e => setLpN(e.target.value)}
+                  placeholder="nazwa LP" style={{ width: 140 }} />
+                <input type="text" value={lpU} onChange={e => setLpU(e.target.value)}
+                  placeholder="URL" style={{ flex: 1, minWidth: 160 }} />
+                <button className="btn mini" onClick={() => { onSetLP(lpN, lpU); setEditing(false); }}>Zapisz</button>
+                <button className="btn mini" onClick={() => setEditing(false)}>Anuluj</button>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [p, setP] = useState(null);
+      const [origLine, setOrigLine] = useState(null);  // pristine {number,creativeName,lpName}, for line_conflict toggling
+      const [showJson, setShowJson] = useState(false);
+      const drag = useRef(null);
+      const [over, setOver] = useState(null);
+
+      const clone = () => JSON.parse(JSON.stringify(p));
+      const commit = np => setP(np);
+      const [siteStruct, setSiteStruct] = useState(null);  // existing {placements:[{name,ads:[{name,creatives}]}]}
+      function loadProposal(np) {
+        setP(np);
+        setAnswers(defaultsFor(np));
+        setOrigLine(np && np.line ? { ...np.line } : null);
+        setSiteStruct(null);
+        if (np && np.campaign && np.campaign.id && np.site) {
+          fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(np.site.name)}`)
+            .then(r => r.json()).then(setSiteStruct).catch(() => {});
+        }
+      }
+
+      // ---- question answers drive the tree ----
+      const defaultsFor = prop => { const a = {}; ((prop && prop.questions) || []).forEach(q => { a[q.id] = q.default; }); return a; };
+      const [answers, setAnswers] = useState({});
+      const [remarks, setRemarks] = useState('');
+      const [aiNote, setAiNote] = useState('');
+      const [commitRes, setCommitRes] = useState(null);
+
+      const questions = (p && p.questions) || [];
+      const groupsQ = questions.find(q => q.id === 'groups');
+      const activeGroups = groupsQ ? (answers.groups || []) : null;
+      const isVisible = pl => !pl.group || !activeGroups || activeGroups.includes(pl.group);
+
+      // line_conflict is a REAL one-time rename (not a render override), so it plays
+      // nicely with freely-edited/multiple creatives per ad added afterwards.
+      function setAnswer(id, val) {
+        setAnswers(a => ({ ...a, [id]: val }));
+        if (id !== 'line_conflict' || !p || !origLine) return;
+        const lcQ2 = questions.find(q => q.id === 'line_conflict');
+        const reuseLine = lcQ2 && lcQ2.detail && lcQ2.detail.reuseLine;
+        if (!reuseLine) return;
+        const fromName = val === 'reuse' ? origLine.creativeName : reuseLine.creativeName;
+        const toName = val === 'reuse' ? reuseLine.creativeName : origLine.creativeName;
+        // only relabel creatives that still match fromName — leaves manually
+        // customized creative names (e.g. linia3-słońce) untouched.
+        const np = clone();
+        np.placements.forEach(pl => pl.ads.forEach(a => a.creatives.forEach(cr => {
+          if (cr.name === fromName) { cr.name = toName; cr.status = val === 'reuse' ? 'existing' : 'new'; }
+        })));
+        np.line = val === 'reuse'
+          ? { ...np.line, number: reuseLine.number, creativeName: reuseLine.creativeName,
+              lpName: reuseLine.lpName, reusedLine: true }
+          : { ...np.line, ...origLine, reusedLine: false };
+        commit(np);
+      }
+
+      const tags = [];
+      if (p) p.placements.forEach(pl => { if (isVisible(pl)) pl.ads.forEach(a =>
+        a.creatives.forEach(cr => tags.push({ placement: pl.name, ad: a.name, creative: cr.name }))); });
+
+      // ---- drag & drop of ads (within + across placements) ----
+      function onDrop(toPl, toIdx) {
+        const from = drag.current; drag.current = null; setOver(null);
+        if (!from) return;
+        const np = clone();
+        const [moved] = np.placements[from.pl].ads.splice(from.idx, 1);
+        let ti = toIdx;
+        if (from.pl === toPl && from.idx < toIdx) ti -= 1;
+        np.placements[toPl].ads.splice(ti, 0, moved);
+        commit(np);
+      }
+
+      function renameAd(pl, idx, name) { const np = clone(); np.placements[pl].ads[idx].name = name; commit(np); }
+      function renamePl(pl, name) { const np = clone(); np.placements[pl].name = name; commit(np); }
+      function delAd(pl, idx) { const np = clone(); np.placements[pl].ads.splice(idx, 1); commit(np); }
+      function addAd(pl, name, knownCreatives) {
+        const np = clone();
+        const already = (knownCreatives || []).includes(p.line.creativeName);
+        np.placements[pl].ads.push({ name: name || "nowy", dimension: null, status: name ? 'existing' : 'new',
+          creatives: [{ name: p.line.creativeName, type: "?", packaged: false, source_path: null,
+                       status: already ? 'existing' : 'new' }] });
+        commit(np);
+      }
+      function renameCre(pl, ai, ci, name) { const np = clone(); np.placements[pl].ads[ai].creatives[ci].name = name; commit(np); }
+      function delCreative(pl, ai, ci) { const np = clone(); np.placements[pl].ads[ai].creatives.splice(ci, 1); commit(np); }
+      function setCreativeLP(pl, ai, ci, lpName, lpUrl) {
+        const np = clone(); const cr = np.placements[pl].ads[ai].creatives[ci];
+        cr.lpName = lpName; cr.lpUrl = lpUrl; commit(np);
+      }
+      function clearCreativeLP(pl, ai, ci) {
+        const np = clone(); const cr = np.placements[pl].ads[ai].creatives[ci];
+        delete cr.lpName; delete cr.lpUrl; commit(np);
+      }
+      // "Zastosuj do wszystkich": if the row's name is unchanged since it appeared,
+      // just add this creative to every ad missing it; if it was renamed (fromName
+      // != toCr.name), rename the matching creative everywhere too (and still add it
+      // where the old name never existed), so one click covers both add and rename.
+      function applyCreativeToAll(srcPl, srcAi, fromName, toCr) {
+        const np = clone();
+        np.placements.forEach((pl, pi) => {
+          if (!isVisible(pl)) return;
+          pl.ads.forEach((a, ai) => {
+            if (pi === srcPl && ai === srcAi) return;  // never touch siblings on the source ad itself
+            const renamed = fromName !== toCr.name ? a.creatives.find(c => c.name === fromName) : null;
+            if (renamed) {
+              renamed.name = toCr.name; renamed.type = toCr.type; renamed.packaged = toCr.packaged;
+              renamed.source_path = toCr.source_path;
+              if (toCr.lpName) { renamed.lpName = toCr.lpName; renamed.lpUrl = toCr.lpUrl; }
+              else { delete renamed.lpName; delete renamed.lpUrl; }
+            } else if (!a.creatives.some(c => c.name === toCr.name)) {
+              a.creatives.push({ name: toCr.name, type: toCr.type, packaged: toCr.packaged,
+                source_path: toCr.source_path, status: 'new',
+                ...(toCr.lpName ? { lpName: toCr.lpName, lpUrl: toCr.lpUrl } : {}) });
+            }
+          });
+        });
+        commit(np);
+      }
+      function addCreative(pl, ai) {
+        const np = clone();
+        np.placements[pl].ads[ai].creatives.push({ name: p.line.creativeName, type: "?",
+          packaged: false, source_path: null, status: "new" });
+        commit(np);
+      }
+      function addPlacement(name, isExisting) {
+        const np = clone();
+        np.placements.push({ name: name || "Nowy placement", group: null, source: p.source,
+          site: p.site.name, compatibility: "DISPLAY", size: "1x1",
+          status: isExisting ? 'existing' : 'new', ads: [] });
+        commit(np);
+      }
+      function delPlacement(pl) { const np = clone(); np.placements.splice(pl, 1); commit(np); }
+
+      // existing placements/ads from live CM (for pickers), minus what's already in this proposal
+      function existingPlacementOptions() {
+        if (!siteStruct) return [];
+        const have = new Set(p.placements.map(pl => pl.name));
+        return siteStruct.placements.filter(pl => !have.has(pl.name));
+      }
+      function existingAdOptions(plName) {
+        if (!siteStruct) return [];
+        const cur = p.placements.find(pl => pl.name === plName);
+        const have = new Set((cur ? cur.ads : []).map(a => a.name));
+        const src = siteStruct.placements.find(pl => pl.name === plName);
+        return (src ? src.ads : []).filter(a => !have.has(a.name));
+      }
+
+      function loadFile(e) {
+        const f = e.target.files[0]; if (!f) return;
+        const r = new FileReader();
+        r.onload = () => { try { loadProposal(JSON.parse(r.result)); } catch (err) { alert("Zły JSON: " + err); } };
+        r.readAsText(f);
+      }
+
+      async function refine() {
+        if (!remarks.trim()) { setAiNote('Wpisz uwagi, co poprawić.'); return; }
+        setAiNote('Wysyłam uwagi do Agenta AI…');
+        try {
+          const resp = await fetch('/api/refine', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proposal: p, answers, remarks }),
+          });
+          const d = await resp.json();
+          if (d.error) setAiNote('Błąd: ' + d.error);
+          else if (d.proposal) { loadProposal(d.proposal); setRemarks(''); setAiNote('Agent AI poprawił strukturę ✓'); }
+          else setAiNote('Agent AI: ' + (d.notes || '(brak zmian — podpięcie w n8n)'));
+        } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+      }
+
+      async function doCommit(dryRun) {
+        setCommitRes({ busy: true, dryRun });
+        try {
+          const eff = { ...p, placements: p.placements.filter(isVisible) };
+          const r = await fetch('/api/commit', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proposal: eff, answers, dryRun }),
+          });
+          setCommitRes(await r.json());
+        } catch (e) { setCommitRes({ error: String(e) }); }
+      }
+
+      return (
+        <div>
+          <header>
+            <h1>🧩 CM Worker — weryfikacja struktury</h1>
+            <div className="spacer" />
+            <div className="toolbar">
+              <label className="btn">Wczytaj JSON
+                <input type="file" accept="application/json" style={{ display: 'none' }} onChange={loadFile} /></label>
+              <button className="btn" onClick={() => { loadProposal(null); setRemarks(''); setAiNote(''); }}>Wyczyść</button>
+              <button className="btn" onClick={() => setShowJson(s => !s)}>{showJson ? 'Ukryj JSON' : 'Podgląd JSON'}</button>
+              <button className="btn primary" disabled={!p} onClick={() => doCommit(true)}>Zatwierdź strukturę →</button>
+            </div>
+          </header>
+
+          <div className="wrap">
+            <InputPanel onResult={loadProposal} />
+
+            {!p && <div className="card"><span className="hint">Wprowadź adres LP i wgraj plik .zip w karcie „Nowe zlecenie", a następnie kliknij „Analizuj → zbuduj propozycję".</span></div>}
+
+            {p && <React.Fragment>
+            <div className="card">
+              <div className="meta">
+                <span className="k">Kampania</span>
+                <span><EditableText value={p.campaign.name} onChange={v => { const np = clone(); np.campaign.name = v; commit(np); }} /> <Badge s={p.campaign.status} /> <span className="hint">id={p.campaign.id || '— (nowa)'}</span></span>
+                <span className="k">Źródło → Site</span>
+                <span><b>{p.source}</b> <span className="arrow">→</span> {p.site.name} <Badge s={p.site.status} /></span>
+              </div>
+            </div>
+
+            <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer} />
+            <LinesPanel line={p.line} source={p.source} existing={p.existingLines || []} />
+
+            <div className="card">
+              <div className="toolbar" style={{ marginBottom: 12 }}>
+                <span className="tagbar">🏷️ Tagi do wygenerowania: {tags.length}</span>
+                <span className="hint">= liczba (Ad × Creative). Przeciągnij Ad, aby przenieść. Kliknij nazwę, aby edytować.</span>
+                <div className="spacer" />
+                <AddPicker label="+ placement" options={existingPlacementOptions()}
+                  optionLabel={o => `${o.name} (${o.ads.length} adów)`}
+                  onPick={o => addPlacement(o.name, true)}
+                  onAddNew={name => addPlacement(name, false)}
+                  placeholder="nazwa nowego placementu" />
+              </div>
+
+              <div className="form" style={{ maxWidth: 'none', marginBottom: 14 }}>
+                <textarea rows="2" value={remarks} onChange={e => setRemarks(e.target.value)}
+                  placeholder="Coś się nie zgadza w strukturze? Napisz co poprawić — Agent AI zinterpretuje uwagi i przygotuje poprawioną strukturę (np. 'Screening to osobny placement', '300x250 ma iść pod linia4')." />
+                <div>
+                  <button className="btn" onClick={refine}>✨ Popraw strukturę wg uwag (AI)</button>
+                  {aiNote && <span className="hint" style={{ marginLeft: 10 }}>{aiNote}</span>}
+                </div>
+              </div>
+
+              <div className="node">
+                <div className="site">
+                  <div className="row">🌐 {p.site.name} <Badge s={p.site.status} /></div>
+                  {p.placements.map((pl, pi) => isVisible(pl) && (
+                    <div className="placement" key={pi}
+                      onDragOver={e => { e.preventDefault(); }}
+                      onDrop={() => onDrop(pi, pl.ads.length)}>
+                      <div className="row">
+                        📄 <EditableText value={pl.name} onChange={v => renamePl(pi, v)} /> <Badge s={pl.status} />
+                        {pl.group && <span className="hint"> · grupa {pl.group}</span>}
+                        <span className="hint"> · {pl.site} · {pl.size}</span>
+                        <AddPicker label="+ ad" options={existingAdOptions(pl.name)}
+                          optionLabel={o => `${o.name} (${o.creatives.length} creative: ${o.creatives.join(', ') || '—'})`}
+                          onPick={o => addAd(pi, o.name, o.creatives)}
+                          onAddNew={name => addAd(pi, name)}
+                          placeholder="nazwa/wymiar nowego ad" />
+                        <button className="btn link mini del" onClick={() => delPlacement(pi)}>usuń</button>
+                      </div>
+                      {pl.ads.map((a, ai) => (
+                        <div className="ad-block" key={ai}>
+                          <div
+                            className={"ad" + (over && over.pl === pi && over.idx === ai ? " over" : "")}
+                            draggable
+                            onDragStart={() => { drag.current = { pl: pi, idx: ai }; }}
+                            onDragOver={e => { e.preventDefault(); e.stopPropagation(); setOver({ pl: pi, idx: ai }); }}
+                            onDragLeave={() => setOver(null)}
+                            onDrop={e => { e.stopPropagation(); onDrop(pi, ai); }}>
+                            <span className="grip">⋮⋮</span>
+                            <span className="icon">📐</span>
+                            <span className="name"><EditableText value={a.name} onChange={v => renameAd(pi, ai, v)} /></span>
+                            <Badge s={a.status} />
+                            <div className="spacer" />
+                            <button className="btn link mini" onClick={() => addCreative(pi, ai)}>+ creative</button>
+                            <button className="btn mini del" onClick={() => delAd(pi, ai)}>usuń ad</button>
+                          </div>
+                          <div className="cre-list">
+                            {a.creatives.map((cr, ci) => (
+                              <CreativeRow key={ci} cr={cr} lineLp={p.line}
+                                onRename={v => renameCre(pi, ai, ci, v)}
+                                onDelete={() => delCreative(pi, ai, ci)}
+                                onSetLP={(n, u) => setCreativeLP(pi, ai, ci, n, u)}
+                                onClearLP={() => clearCreativeLP(pi, ai, ci)}
+                                onApplyToAll={(fromName, toCr) => applyCreativeToAll(pi, ai, fromName, toCr)} />
+                            ))}
+                            {a.creatives.length === 0 &&
+                              <div className="hint">— brak creative — <button className="btn link mini" onClick={() => addCreative(pi, ai)}>+ dodaj</button></div>}
+                          </div>
+                        </div>
+                      ))}
+                      {pl.ads.length === 0 && <div className="ad hint" style={{ cursor: 'default' }}>— pusto — przeciągnij tu Ad —</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {p.warnings && p.warnings.length > 0 &&
+              <div className="card"><b>⚠️ Uwagi parsera:</b> <span className="hint">{p.warnings.join(' · ')}</span></div>}
+
+            {showJson && <div className="card"><pre>{JSON.stringify(p, null, 2)}</pre></div>}
+
+            {commitRes && <div className="card">
+              <div className="lines-title">{commitRes.dryRun ? '🔍 Podgląd zapisu (dry-run — nic nie zapisano)' : '✅ Zapis do CM360 wykonany'}</div>
+              {commitRes.busy && <div className="hint">Pracuję…</div>}
+              {commitRes.error && <div className="hint">Błąd: {commitRes.error}</div>}
+              {commitRes.log && commitRes.log.map((e, i) => (
+                <div key={i} style={{ padding: '2px 0' }}>
+                  <b>{e.action}</b> {e.kind} <b>{e.name}</b> {e.id ? <span className="hint">id={e.id}</span> : null}
+                  {e.detail ? <span className="hint"> · {e.detail}</span> : null}
+                </div>
+              ))}
+              {commitRes.tags && <div style={{ marginTop: 8 }}>🏷️ Tagi: <b>{commitRes.tags.count}</b> → <span className="hint">{commitRes.tags.file}</span></div>}
+              {(commitRes.log || commitRes.error) && <div style={{ marginTop: 12 }}>
+                {commitRes.dryRun && commitRes.log && <button className="btn primary" onClick={() => doCommit(false)}>Wykonaj w CM360 (zapis) →</button>}
+                <button className="btn" style={{ marginLeft: 8 }} onClick={() => setCommitRes(null)}>Zamknij</button>
+              </div>}
+            </div>}
+            </React.Fragment>}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

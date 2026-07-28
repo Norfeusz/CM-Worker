@@ -1,0 +1,11 @@
+{
+  "_comment": "source (UI choice) -> CM360 Site + placement naming convention. adKey decides how an Ad is named from a parsed zip unit. Extensible; refine with training pairs. Facebook/DemGen conventions are first-guess.",
+  "sources": {
+    "GDN":         { "site": "CG_GDN",          "placementByFormat": { "Display": "Display", "Video": "Video" },                          "adKey": "dimension" },
+    "Facebook":    { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card" },
+    "Meta":        { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card", "_note": "alias of Facebook" },
+    "DemGen":      { "site": "CG_Demand_Gen",   "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela" },                     "adKey": "variant" },
+    "Programmatic":{ "site": "CG_Programmatic", "placementByFormat": { "Display": "Display" },                                            "adKey": "dimension" },
+    "Mailing":     { "site": "mailsales.pl",    "placementByFormat": { "Mailing": "Mailing" },                                           "adKey": "dimension" }
+  }
+}
