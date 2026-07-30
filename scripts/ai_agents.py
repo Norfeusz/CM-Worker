@@ -199,6 +199,26 @@ You are role (b): the trafficker was shown a proposed structure, is not happy wi
 wrote freeform remarks in Polish. Translate their intent into a list of EDIT OPERATIONS
 against the current structure.
 
+FIELD USAGE PER OP — use exactly these; set every other field to null. Getting this wrong
+means the operation is SKIPPED and the user's request silently does not happen, so treat it
+as strictly as the schema itself:
+
+  rename_placement       placement = current name,  to = new name
+  add_placement          name      = new placement name
+  rename_ad              placement, ad = current ad name,  to = new ad name
+  add_ad                 placement, name = new ad name
+  delete_ad              placement, ad
+  move_ad                placement = SOURCE placement, ad, to = TARGET placement name
+  add_creative           placement, ad, name = creative name, optional lpName + lpUrl
+  rename_creative        placement, ad, creative = current name, to = new name
+  delete_creative        placement, ad, creative
+  set_creative_lp        placement, ad, creative, lpName, lpUrl
+  apply_creative_to_all  name = creative name, optional lpName + lpUrl   (no placement/ad)
+
+Note the pattern: `to` always holds the NEW value (a new name, or the target placement for
+move_ad). `name` holds the name of a node being CREATED. The node being acted upon is
+addressed by placement / ad / creative.
+
 Rules:
   * Only emit ops that the remarks actually justify. Do not tidy, reorder, or "improve"
     anything they did not mention.
@@ -404,31 +424,36 @@ def apply_ops(proposal, ops):
                 done(o, f"placement {old!r} -> {o['to']!r}")
 
         elif kind == "add_placement":
-            if not o.get("name"):
-                skip(o, "brak nazwy")
-            elif _find(pls, o["name"]):
-                skip(o, f"placement {o['name']!r} już istnieje")
+            # tolerate the name arriving in `placement` or `to` — the intent is
+            # unambiguous for a create op, and a skipped op means the user's request
+            # silently did not happen
+            new_name = o.get("name") or o.get("placement") or o.get("to")
+            if not new_name:
+                skip(o, "brak nazwy nowego placementu")
+            elif _find(pls, new_name):
+                skip(o, f"placement {new_name!r} już istnieje")
             else:
-                pls.append({"name": o["name"], "group": None,
+                pls.append({"name": new_name, "group": None,
                             "source": p.get("source"),
                             "site": (p.get("site") or {}).get("name"),
                             "compatibility": "DISPLAY", "size": "1x1",
                             "status": "new", "ads": []})
-                done(o, f"nowy placement {o['name']!r}")
+                done(o, f"nowy placement {new_name!r}")
 
         elif kind in ("rename_ad", "add_ad", "delete_ad"):
             if not pl:
                 skip(o, f"nie ma placementu {o.get('placement')!r}")
                 continue
             if kind == "add_ad":
-                if not o.get("name"):
+                new_ad = o.get("name") or o.get("ad") or o.get("to")
+                if not new_ad:
                     skip(o, "brak nazwy ada")
-                elif _find(pl["ads"], o["name"]):
-                    skip(o, f"ad {o['name']!r} już jest w {pl['name']!r}")
+                elif _find(pl["ads"], new_ad):
+                    skip(o, f"ad {new_ad!r} już jest w {pl['name']!r}")
                 else:
-                    pl["ads"].append({"name": o["name"], "dimension": o["name"],
+                    pl["ads"].append({"name": new_ad, "dimension": new_ad,
                                       "status": "new", "creatives": []})
-                    done(o, f"nowy ad {o['name']!r} w {pl['name']!r}")
+                    done(o, f"nowy ad {new_ad!r} w {pl['name']!r}")
             else:
                 ad = _find(pl["ads"], o.get("ad") or o.get("name"))
                 if not ad:
@@ -444,7 +469,7 @@ def apply_ops(proposal, ops):
 
         elif kind == "move_ad":
             src = _find(pls, o.get("placement"))
-            dst = _find(pls, o.get("to"))
+            dst = _find(pls, o.get("to") or o.get("name"))
             ad = _find(src["ads"], o.get("ad") or o.get("name")) if src else None
             if not src or not dst:
                 skip(o, "nie ma placementu źródłowego albo docelowego")

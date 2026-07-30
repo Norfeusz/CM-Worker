@@ -168,8 +168,18 @@ Obie role przetestowane end-to-end na prawdziwym modelu. Rzeczy, które kosztowa
 4. **Zmiana promptu wymaga restartu `serve.py`** — moduł jest zaimportowany w pamięci
    procesu, edycja pliku nie działa na żywo. Objawia się identyczną odpowiedzią po poprawce.
 5. Model potrafi być nadgorliwy: przy zipie bez podfolderów zwracał `group_mappings` z pustym
-   `folder`. Prompt tego zakazuje (bo taka reguła trafiłaby do configu) — **poprawka wprowadzona
-   po ostatnim żywym teście, jeszcze nieprzeweryfikowana**.
+   `folder`. Prompt tego zakazuje (bo taka reguła trafiłaby do configu przez promocję i
+   zostałaby tam na zawsze) — poprawka zweryfikowana, pole wraca teraz puste.
+6. **Generyczna koperta operacji WYMAGA tabeli pól w promptcie.** `INTENT_SCHEMA` ma jeden
+   kształt operacji (`placement/ad/creative/name/to/lpName/lpUrl`), więc schemat nie jest w
+   stanie wymusić, które pole znaczy co przy której operacji. Bez jawnej tabeli Gemini
+   rozumiał zlecenie poprawnie, ale wstawiał nazwy w inne pola i **3 z 4 operacji były po
+   cichu pomijane** — z notatką modelu twierdzącą, że wszystko wykonał. Prompt ma teraz
+   tabelę „FIELD USAGE PER OP", a `apply_ops` toleruje oczywiste przestawienia
+   (`add_placement` przyjmie nazwę z `placement`/`to`, `move_ad` cel z `name`). Test
+   regresyjny w `test_ai_agents.py`. **Wniosek na przyszłość: testy na atrapie webhooka nie
+   wyłapią tej klasy błędu, bo odpowiedzi atrapy pisze się pod własne założenia** — po każdej
+   zmianie kontraktu operacji trzeba jeden przebieg na żywym modelu.
 
 ## Model domenowy (zwalidowany na żywych danych CM360)
 

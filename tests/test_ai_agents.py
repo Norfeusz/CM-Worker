@@ -135,6 +135,37 @@ np, log = A.apply_ops(base, [op("nonsense")])
 check("nieznana operacja -> pominięta z powodem",
       (log[0]["ok"], "nieznana" in log[0]["detail"]), (False, True))
 
+print("\ntolerancja na wartość w innym polu (realny błąd z żywego testu Gemini —\n"
+      "model rozumiał zlecenie, ale wstawiał nazwy w inne pola, niż oczekiwał apply_ops):")
+np, log = A.apply_ops(base, [op("add_placement", placement="Screening")])
+check("add_placement z nazwą w `placement` -> zastosowane", log[0]["ok"], True)
+check("i placement faktycznie powstał",
+      [pl["name"] for pl in np["placements"]][-1], "Screening")
+
+np, log = A.apply_ops(base, [op("add_placement", to="Screening")])
+check("add_placement z nazwą w `to` -> zastosowane", log[0]["ok"], True)
+
+np, log = A.apply_ops(base, [op("add_ad", placement=PL, ad="999x999")])
+check("add_ad z nazwą w `ad` -> zastosowane", log[0]["ok"], True)
+check("i ad faktycznie powstał",
+      [a["name"] for a in np["placements"][0]["ads"]][-1], "999x999")
+
+np, log = A.apply_ops(base, [op("add_placement", placement="Screening"),
+                             op("move_ad", placement=PL, ad=ADS[0], name="Screening")])
+check("move_ad z celem w `name` -> zastosowane", log[1]["ok"], True)
+check("ad rzeczywiście przeniesiony",
+      [a["name"] for a in np["placements"][-1]["ads"]], [ADS[0]])
+
+np, log = A.apply_ops(base, [op("add_placement")])
+check("nadal odrzuca add_placement bez ŻADNEJ nazwy", log[0]["ok"], False)
+
+print("\nprompt roli (b) musi podawać znaczenie pól per operacja "
+      "(bez tego model zgaduje i operacje są pomijane):")
+for o in A.OPS:
+    check(f"tabela pól opisuje {o}", o in A.INTENT_SYSTEM, True)
+check("wyjaśnione, że `to` trzyma NOWĄ wartość",
+      "`to` always holds the NEW value" in A.INTENT_SYSTEM, True)
+
 print("\nkontrakt żądania dla roli (b):")
 req = A.build_intent_request(base, "Screening to osobny placement")
 check("żądanie ma uwagi, strukturę i słownik operacji",
