@@ -26,6 +26,42 @@ from cm_read import fetch_state, search_sites, existing_tree, site_structure, _p
 from match_link import _fetch_campaign_lps, TEST_PROFILE, TEST_ADVERTISER, MAP_PATH
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui")
+
+
+def friendly_error(e):
+    """Turn an exception into something a trafficker can act on.
+
+    A raw `ServerNotFoundError: Unable to find the server at dfareporting.googleapis.com`
+    tells the user nothing about what to do; "sieć mrugnęła, kliknij ponownie" does. The
+    original class name stays at the end so a bug report is still diagnosable.
+    """
+    name = type(e).__name__
+    text = str(e)
+    tail = f" [{name}]"
+
+    # DNS / brak sieci / VPN — najczęstszy przypadek przy pracy na laptopie
+    if name in ("ServerNotFoundError", "gaierror", "URLError") or "Unable to find the server" in text:
+        return ("Brak połączenia z API Google. Sprawdź sieć/VPN i kliknij ponownie — "
+                "propozycja nie została zbudowana, więc nic się nie zapisało." + tail)
+    if name in ("TimeoutError", "socket.timeout", "timeout") or "timed out" in text.lower():
+        return ("API Google nie odpowiedziało w czasie. Spróbuj ponownie — jeśli powtarza "
+                "się, to zwykle chwilowe spowolnienie po stronie Google." + tail)
+    if name in ("SSLError", "SSLEOFError", "CertificateError"):
+        return ("Błąd TLS przy połączeniu z Google — zwykle firmowy proxy/antywirus "
+                "podmieniający certyfikat." + tail)
+    # token OAuth
+    if name == "RefreshError" or "invalid_grant" in text or "Token has been expired" in text:
+        return ("Token OAuth wygasł lub został unieważniony. Uruchom "
+                "`py scripts/cm_auth.py`, żeby zalogować się ponownie." + tail)
+    # bezpiecznik allowlisty ma już czytelny komunikat — nie zaciemniaj go
+    if name == "RuntimeError" and "SAFETY guard" in text:
+        return text
+    if name == "HttpError":
+        status = getattr(getattr(e, "resp", None), "status", "?")
+        return f"CM360 odrzuciło żądanie (HTTP {status}): {text}"
+    return f"{name}: {text}"
+
+
 CTYPE = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
          ".css": "text/css", ".json": "application/json"}
 
@@ -116,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
                 res = search_sites(service(read_only=True), TEST_PROFILE, q)
                 return self._send(200, json.dumps(res, ensure_ascii=False))
             except Exception as e:
-                return self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+                return self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
         if route == "/api/site-structure":
             from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(self.path).query)
@@ -129,7 +165,7 @@ class Handler(BaseHTTPRequestHandler):
                 state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
                 return self._send(200, json.dumps(site_structure(state, site), ensure_ascii=False))
             except Exception as e:
-                return self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+                return self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
         if route == "/api/campaigns":
             try:
                 svc = service(read_only=True)
@@ -138,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
                 out = [{"id": c["id"], "name": c["name"]} for c in camps]
                 return self._send(200, json.dumps({"campaigns": out}, ensure_ascii=False))
             except Exception as e:
-                return self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+                return self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
         if route == "/api/campaign-lps":
             from urllib.parse import urlparse, parse_qs
             cid = (parse_qs(urlparse(self.path).query).get("campaignId") or [""])[0]
@@ -152,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
                             key=lambda x: x["name"] or "")
                 return self._send(200, json.dumps({"landingPages": out}, ensure_ascii=False))
             except Exception as e:
-                return self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+                return self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
         rel = route.lstrip("/") or "index.html"
         path = os.path.normpath(os.path.join(UI_DIR, rel))
         if not path.startswith(os.path.normpath(UI_DIR)) or not os.path.isfile(path):
@@ -177,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(self._create_site(req), ensure_ascii=False))
             return self._send(404, json.dumps({"error": "unknown endpoint"}))
         except Exception as e:
-            self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+            self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
 
     def _build(self, req):
         zip_path = req.get("zipPath")
@@ -206,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
                               allow_new_directory_site=bool(req.get("allowNewDirectorySite")),
                               dry_run=dry)
         except Exception as e:
-            return {"error": f"{type(e).__name__}: {e}"}
+            return {"error": friendly_error(e)}
         out = {"dryRun": dry, "name": name,
                "directorySiteId": r.get("directorySiteId") or r.get("_directorySiteId"),
                "resolution": r.get("resolution"),
