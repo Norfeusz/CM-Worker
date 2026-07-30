@@ -1,5 +1,6 @@
 {
   "_comment": "source (UI choice) -> CM360 Site + placement naming convention. adKey decides how an Ad is named from a parsed zip unit. Extensible; refine with training pairs. Facebook/DemGen conventions are first-guess.",
+  "_verified": "2026-07-29, konto testowe (profil 9556074): każdy Site z tej mapy istnieje na koncie — CG_GDN=4982174, CG_Facebook=5009061, CG_Demand_Gen=10795500, CG_Programmatic=7477644, mailsales.pl=2836807. Nazwy Site NIE muszą pokrywać się z nazwą wpisu Site Directory (CG_GDN wisi na wpisie 'CG_remarketing' 3410897) — przy dodawaniu nowego Site wskazuj wpis katalogu ręcznie.",
   "sources": {
     "GDN":         { "site": "CG_GDN",          "placementByFormat": { "Display": "Display", "Video": "Video" },                          "adKey": "dimension" },
     "Facebook":    { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card" },
