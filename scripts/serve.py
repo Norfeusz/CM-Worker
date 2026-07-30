@@ -20,6 +20,7 @@ import parse_zip
 import matcher as M
 import build_proposal as B
 import ai_fallback
+import ai_agents as AG
 from cm_auth import service
 from cm_read import fetch_state, search_sites, existing_tree, site_structure, _paginate
 from match_link import _fetch_campaign_lps, TEST_PROFILE, TEST_ADVERTISER, MAP_PATH
@@ -29,15 +30,28 @@ CTYPE = {".html": "text/html; charset=utf-8", ".js": "application/javascript; ch
          ".css": "text/css", ".json": "application/json"}
 
 
-def build_proposal(link, zip_path, source, message="", campaign_id=None):
+def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None):
     rules = json.load(open(MAP_PATH, encoding="utf-8"))["rules"]
     rule = M.resolve_advertiser(link, rules)
     if not rule:
         return {"error": "Żadna reguła nie dopasowała advertisera (tu wejdzie fallback AI)."}
     anchor = rule.get("anchor", [])
     svc = service(read_only=True)
-    camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
 
+    if new_campaign:
+        # brand-new campaign: no campaign LPs yet, so this link is always line 1 and
+        # every placement/ad/creative below is new. Account-level sites still exist,
+        # so pass them as an empty-placement tree to keep the Site badge honest.
+        state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER)
+        parsed = parse_zip.parse(zip_path)
+        prop = B.build_proposal(source, parsed,
+                                {"id": None, "name": new_campaign, "status": "new"},
+                                M.resolve_line(link, anchor, source, []),
+                                existing={s: {} for s in state["sites_by_name"]},
+                                campaign_lps=[], target_url=link)
+        return _attach_ai(prop, parsed, message, rules)
+
+    camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
     if campaign_id:
         # explicit override (user manually picked a campaign from the browse list)
         cid = campaign_id
@@ -46,6 +60,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None):
         if suggest_new:
             return {"suggestNewCampaign": True, "advertiser": rule.get("advertiser"),
                     "message": "Brak kampanii z pasującą ścieżką — zasugerowano utworzenie nowej.",
+                    "pathHint": "/".join(M.remaining_path(link, anchor) or []),
                     "candidates": ranked[:5]}
         cid = ranked[0]["campaignId"]
 
@@ -55,10 +70,29 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None):
     parsed = parse_zip.parse(zip_path)
     campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
     state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
-    return B.build_proposal(source, parsed,
+    prop = B.build_proposal(source, parsed,
                             {"id": cid, "name": campaign["name"], "status": "existing"},
                             line, existing=existing_tree(state), campaign_lps=this,
                             target_url=link, line_conflict=conflict)
+    return _attach_ai(prop, parsed, message, rules)
+
+
+def _attach_ai(proposal, parsed, message, rules):
+    """Attach the escalation points and the ready-made agent (a) request.
+
+    Carrying the request in the proposal means /api/assist needs no re-upload and no
+    re-parse of the zip — the client just hands back what it already has. Escalations
+    are informational: an empty list means the deterministic rules were enough and no
+    model is needed for this order.
+    """
+    advertisers = sorted({r.get("advertiser") for r in rules if r.get("advertiser")})
+    proposal["ai"] = {
+        "escalations": ai_fallback.escalations(parsed, proposal, message),
+        "request": ai_fallback.build_request(parsed, proposal, message, advertisers),
+        "wired": {"structure": AG.configured("N8N_STRUCTURE_URL"),
+                  "intent": AG.configured("N8N_INTENT_URL")},
+    }
+    return proposal
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -135,16 +169,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(self._build(req), ensure_ascii=False))
             if route == "/api/refine":
                 return self._send(200, json.dumps(self._refine(req), ensure_ascii=False))
+            if route == "/api/assist":
+                return self._send(200, json.dumps(self._assist(req), ensure_ascii=False))
             if route == "/api/commit":
                 return self._send(200, json.dumps(self._commit(req), ensure_ascii=False))
             if route == "/api/create-site":
-                import cm_write as W
-                r = W.create_site(service(read_only=True), TEST_PROFILE,
-                                  req.get("name"), req.get("url"), dry_run=True)
-                return self._send(200, json.dumps(
-                    {"planned": True, "name": req.get("name"),
-                     "note": "Plan (dry-run): znajdź w Site Directory albo dodaj + podepnij do konta. "
-                             "Realne dodanie wymaga potwierdzenia (zapis)."}, ensure_ascii=False))
+                return self._send(200, json.dumps(self._create_site(req), ensure_ascii=False))
             return self._send(404, json.dumps({"error": "unknown endpoint"}))
         except Exception as e:
             self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}))
@@ -159,7 +189,32 @@ class Handler(BaseHTTPRequestHandler):
         if not req.get("link") or not zip_path or not req.get("source"):
             return {"error": "wymagane: link, zip, source"}
         return build_proposal(req["link"], zip_path, req["source"], req.get("message", ""),
-                              campaign_id=req.get("campaignId"))
+                              campaign_id=req.get("campaignId"),
+                              new_campaign=req.get("newCampaign"))
+
+    def _create_site(self, req):
+        """Add a Site to the account. dryRun=True -> plan only (still resolves the
+        Site Directory entry, which is a read); dryRun=False -> real insert."""
+        import cm_write as W
+        name = (req.get("name") or "").strip()
+        if not name:
+            return {"error": "Podaj nazwę Site."}
+        dry = req.get("dryRun", True)
+        try:
+            r = W.create_site(service(read_only=dry), TEST_PROFILE, name, req.get("url"),
+                              req.get("directorySiteId"),
+                              allow_new_directory_site=bool(req.get("allowNewDirectorySite")),
+                              dry_run=dry)
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}"}
+        out = {"dryRun": dry, "name": name,
+               "directorySiteId": r.get("directorySiteId") or r.get("_directorySiteId"),
+               "resolution": r.get("resolution"),
+               "needsNewDirectorySite": r.get("needsNewDirectorySite", False)}
+        if not dry:
+            out["siteId"] = r.get("id")
+            out["createdDirectorySite"] = r.get("_createdDirectorySite", False)
+        return out
 
     def _commit(self, req):
         """Run the orchestrator on the (effective) proposal. dryRun=True -> read-only
@@ -168,16 +223,35 @@ class Handler(BaseHTTPRequestHandler):
         import export_tags
         proposal = req.get("proposal") or {}
         dry = req.get("dryRun", True)
-        cid = (proposal.get("campaign") or {}).get("id")
-        if not cid:
+        camp_spec = proposal.get("campaign") or {}
+        cid = camp_spec.get("id")
+        is_new = camp_spec.get("status") == "new"
+        if not cid and not is_new:
             return {"error": "Brak campaign.id — najpierw zbuduj propozycję."}
+        if is_new and not (camp_spec.get("name") or "").strip():
+            return {"error": "Nowa kampania wymaga nazwy."}
         svc = service(read_only=dry)
-        campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
-        state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+        if is_new:
+            # nothing to read yet — the orchestrator creates it and assigns dates/id
+            campaign, state = camp_spec, fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER)
+        else:
+            campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
+            state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+        if not dry:
+            # Sites must already exist before we write anything: site creation sits AFTER
+            # the LP/campaign steps, so failing there would leave a half-written campaign.
+            wanted = {(proposal.get("site") or {}).get("name")} | {
+                pl.get("site") for pl in proposal.get("placements", [])}
+            missing = sorted(n for n in wanted if n and n not in state["sites_by_name"])
+            if missing:
+                return {"error": f"Site nie istnieje na koncie: {', '.join(missing)}. "
+                                 f"Dodaj go najpierw („Szukaj/dodaj site” w formularzu), "
+                                 f"żeby zapis nie przerwał się po utworzeniu LP/kampanii."}
         orch = Orchestrator(svc, TEST_PROFILE, TEST_ADVERTISER, campaign, dry_run=dry)
         log = orch.run(proposal, state)
-        out = {"dryRun": dry, "log": log}
+        out = {"dryRun": dry, "log": log, "campaignId": orch.cid}
         if not dry:
+            cid = orch.cid                 # a brand-new campaign only has an id now
             # recompute tags fresh from the (possibly user-edited) placements — the
             # client may have added placements/ads/creatives after the proposal was
             # first built, so proposal["tags"] as received can be stale.
@@ -197,18 +271,52 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def _refine(self, req):
-        """Pass user remarks + current structure to the AI seam. Live LLM lives in
-        n8n (ai_fallback.interpret with a real `call`); here it returns the mock."""
-        proposal, remarks = req.get("proposal", {}), req.get("remarks", "")
-        ai_req = {"remarks": remarks, "current_proposal": proposal,
-                  "answers": req.get("answers"),
-                  "instructions": "Apply the human remarks and return a corrected proposal (same schema)."}
-        result = ai_fallback.interpret(ai_req)  # call=None -> mock until wired in n8n
-        if result.get("_mock"):
-            return {"notes": (f"Agent AI (n8n) nie jest jeszcze podpięty. Uwagi przekazane: "
-                              f"„{remarks}”. Po podpięciu Agent zwróci poprawioną strukturę."),
-                    "aiRequest": ai_req}
-        return result
+        """Agent (b): interpret the user's remarks about a structure they don't like.
+
+        n8n returns EDIT OPERATIONS; this applies them deterministically so the tree is
+        never whatever the model happened to echo back. The op log is the diff the user
+        reviews, and `unclear` carries anything the agent refused to guess."""
+        proposal, remarks = req.get("proposal", {}), (req.get("remarks") or "").strip()
+        if not proposal.get("placements"):
+            return {"error": "Brak struktury do poprawienia."}
+        if not remarks:
+            return {"error": "Napisz, co poprawić."}
+        if not AG.configured("N8N_INTENT_URL"):
+            return {"error": "Agent (b) nie jest podpięty — ustaw N8N_INTENT_URL "
+                             "na adres webhooka n8n i zrestartuj serve.py."}
+        ai_req = AG.build_intent_request(proposal, remarks, req.get("answers"))
+        try:
+            result = ai_fallback.interpret(ai_req, call=AG.intent_call())
+        except AG.AgentError as e:
+            return {"error": str(e), "aiRequest": ai_req}
+        new_proposal, log = AG.apply_ops(proposal, result.get("ops"))
+        new_proposal["tags"] = B.compute_tags(new_proposal)
+        applied = [e for e in log if e["ok"]]
+        return {"proposal": new_proposal, "log": log,
+                "applied": len(applied), "skipped": len(log) - len(applied),
+                "unclear": result.get("unclear") or [],
+                "confidence": result.get("confidence"),
+                "notes": result.get("notes") or ""}
+
+    def _assist(self, req):
+        """Agent (a): help build the structure at the low-confidence points.
+
+        Returns SUGGESTIONS only — nothing is applied to the tree here. The user accepts
+        them in the UI, and accepted mappings are what later gets promoted into config so
+        the same case never needs the model again."""
+        proposal = req.get("proposal") or {}
+        ai_req = (proposal.get("ai") or {}).get("request")
+        if not ai_req:
+            return {"error": "Propozycja nie zawiera kontraktu dla AI — zbuduj ją ponownie."}
+        if not AG.configured("N8N_STRUCTURE_URL"):
+            return {"error": "Agent (a) nie jest podpięty — ustaw N8N_STRUCTURE_URL "
+                             "na adres webhooka n8n i zrestartuj serve.py."}
+        try:
+            result = ai_fallback.interpret(ai_req, call=AG.structure_call())
+        except AG.AgentError as e:
+            return {"error": str(e), "aiRequest": ai_req}
+        return {"suggestions": result,
+                "escalations": (proposal.get("ai") or {}).get("escalations") or []}
 
 
 if __name__ == "__main__":
