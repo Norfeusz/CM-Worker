@@ -234,6 +234,26 @@ Nazwy Ad/Placement pochodzą z konwencji zip+source; linie/audience pochodzą z 
 - ✅ Okienko uwag → `/api/refine` (seam gotowy, AI jeszcze nie podłączone)
 - ✅ Repo na GitHub: **github.com/Norfeusz/CM-Worker** (prywatne, branch `main`)
 
+## Decyzje domenowe potwierdzone przez użytkownika, ale JESZCZE NIEZAIMPLEMENTOWANE
+
+**Foldery formatu w paczce GDN → osobne placementy.** Paczka podzielona na `GIF/`, `HTML/`,
+`PNG/` (każdy z podfolderami wymiarów) to **trzy różne placementy**, a mapowanie
+`GIF→GIF`, `HTML→HTML`, `PNG→Display` jest **ogólną regułą dla GDN** (potwierdzone
+30.07.2026). Każdy placement dostaje dokładnie te wymiary, które leżą w jego folderze.
+
+Dziś rdzeń deterministyczny tego NIE robi: `parse_zip._detect_groups` rozpoznaje foldery
+tylko z zamkniętej listy `GROUP_KEYWORDS` (`gdn`, `screening`, `facebook`, `karuzela`…), a
+`gif`/`html`/`png` tam nie ma — więc lądują jako **warianty**, a dla GDN `adKey="dimension"`
+ignoruje warianty, czyli 9 jednostek (3 wymiary × 3 formaty) zwija się do 3 adów i
+rozróżnienie formatów przepada w parserze. Rozbicie trzeba dziś zrobić uwagami do roli (b)
+(działa, sprawdzone na żywym Gemini: 14 operacji, 0 pominiętych).
+
+**Użytkownik świadomie wstrzymał implementację** — chce najpierw potwierdzić na realnych
+paczkach, że agent radzi sobie z tym powtarzalnie. Docelowo to **wzorcowy przypadek dla
+`promote.py`**: zatwierdzona decyzja AI trafia do `source_map.json` (mapowanie
+folder→placement dla GDN) + rozszerzenie `GROUP_KEYWORDS`, i analogiczna paczka nie wymaga
+już modelu.
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 1. **Tworzenie nowej kampanii — ZAIMPLEMENTOWANE, ale NIGDY NIE URUCHOMIONE NA ŻYWO.**
