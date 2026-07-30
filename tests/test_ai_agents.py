@@ -166,10 +166,30 @@ for o in A.OPS:
 check("wyjaśnione, że `to` trzyma NOWĄ wartość",
       "`to` always holds the NEW value" in A.INTENT_SYSTEM, True)
 
+print("\nzawartość zipa MUSI iść do roli (b) — bez niej agent słusznie odmawia\n"
+      "(realny przypadek: „wymiary zgodnie z zawartością paczki” -> zero operacji):")
+ZIPVIEW = {"source_hint": "GDN", "format_hint": "Display",
+           "groups": [], "dimensions": ["160x600", "250x250"],
+           "units": [{"dimension": "160x600", "variant": "GIF", "card_index": None,
+                      "type": "gif", "group": None},
+                     {"dimension": "160x600", "variant": "HTML", "card_index": None,
+                      "type": "html5", "group": None}]}
+with_ai = dict(base, ai={"request": {"zip": ZIPVIEW}})
+req_zip = A.build_intent_request(with_ai, "Wymiary dla GIF i HTML zgodnie z paczką")
+check("zip dołączony do żądania", req_zip["zip"], ZIPVIEW)
+check("warianty z folderów widoczne dla agenta",
+      sorted({u["variant"] for u in req_zip["zip"]["units"]}), ["GIF", "HTML"])
+check("bez sekcji ai propozycja nadal działa (zip = None)",
+      A.build_intent_request(base, "x")["zip"], None)
+check("prompt każe korzystać z zipa",
+      "they are in `zip`" in A.INTENT_SYSTEM, True)
+check("prompt ostrzega, że nowy placement jest PUSTY",
+      "newly created placement is EMPTY" in A.INTENT_SYSTEM, True)
+
 print("\nkontrakt żądania dla roli (b):")
 req = A.build_intent_request(base, "Screening to osobny placement")
-check("żądanie ma uwagi, strukturę i słownik operacji",
-      sorted(req), ["allowed_ops", "answers", "instructions", "remarks", "structure"])
+check("żądanie ma uwagi, strukturę, zip i słownik operacji",
+      sorted(req), ["allowed_ops", "answers", "instructions", "remarks", "structure", "zip"])
 check("struktura zawiera tylko nazwy (bez id/statusów)",
       sorted(req["structure"]["placements"][0]), ["ads", "name"])
 check("słownik operacji zgodny ze schematem",

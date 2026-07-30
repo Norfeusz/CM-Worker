@@ -219,9 +219,19 @@ Note the pattern: `to` always holds the NEW value (a new name, or the target pla
 move_ad). `name` holds the name of a node being CREATED. The node being acted upon is
 addressed by placement / ad / creative.
 
+You are given `zip` — the parsed delivery (dimensions, variants, per-unit type and folder).
+Use it whenever the remarks refer to what is in the package ("wymiary zgodne z zawartością
+paczki", "folder GIF to osobny placement"). A unit's `variant` is its top-level folder, so a
+delivery split into GIF/HTML/PNG folders shows up as units with those variants — that is how
+you know which dimensions belong in a placement named after a folder. Do not claim the zip
+contents are unavailable; they are in `zip`.
+
 Rules:
   * Only emit ops that the remarks actually justify. Do not tidy, reorder, or "improve"
     anything they did not mention.
+  * A newly created placement is EMPTY. If the remarks imply it should hold ads, emit the
+    add_ad ops too — creating an empty placement and then asking which ads go in it wastes
+    a round trip when `zip` already answers the question.
   * Address nodes by their CURRENT names, exactly as given in the structure.
   * Set every field you do not need to null (the schema requires all keys present).
   * Anything you cannot confidently turn into an op goes into `unclear` as a short question
@@ -348,11 +358,19 @@ def configured(url_env):
 
 # ---- request builder for role (b) ------------------------------------------
 def build_intent_request(proposal, remarks, answers=None):
-    """Compact view of the current structure + the user's remarks. Deliberately omits
-    ids/statuses the agent must not invent decisions from."""
+    """Compact view of the current structure + the zip contents + the user's remarks.
+
+    The zip summary matters: remarks routinely reference it ("wymiary zgodnie z zawartością
+    paczki", "foldery GIF/HTML to osobne placementy"). Without it the agent correctly
+    refuses to guess and returns zero ops, which reads like a failure but is the honest
+    answer to an incomplete request. It is reused from ai.request (built at proposal time),
+    so there is no re-upload and no re-parse of the zip here.
+    """
+    zip_view = ((proposal.get("ai") or {}).get("request") or {}).get("zip")
     return {
         "remarks": remarks,
         "answers": answers,
+        "zip": zip_view,
         "structure": {
             "campaign": (proposal.get("campaign") or {}).get("name"),
             "source": proposal.get("source"),
@@ -370,7 +388,8 @@ def build_intent_request(proposal, remarks, answers=None):
         "allowed_ops": OPS,
         "instructions": ("Return edit operations that realise the remarks. Leave unused "
                          "fields null. Put anything ambiguous in `unclear` instead of "
-                         "guessing."),
+                         "guessing. `zip` is the parsed delivery — use it whenever the "
+                         "remarks refer to what is in the package."),
     }
 
 
