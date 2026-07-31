@@ -37,13 +37,22 @@ start http://127.0.0.1:8765/
 W UI, w karcie **„📝 Nowe zlecenie"**: wklej **Adres LP**, wybierz **Źródło**, wgraj **.zip** z materiałami,
 (opcjonalnie) wklej **wiadomość zlecenia** → **„Analizuj → zbuduj propozycję"**. Dostajesz drzewo
 Site→Placement→Ad→Creative z pytaniami sterującymi, panelem linii i licznikiem tagów.
+Pod „Szukaj/dodaj site" możesz **dodać brakujący Site do konta**: „użyj" na wpisie z Site Directory
+podpina go pod istniejący wpis, a „➕ Dodaj Site do konta" prowadzi przez plan (dry-run) → zapis;
+jeśli plan wykaże, że trzeba utworzyć **nowy wpis w katalogu**, zapis jest zablokowany do
+zaznaczenia zgody (wpisy katalogu są ogólnokontowe i nieusuwalne).
 Pod tagami jest **okienko uwag** + „✨ Popraw strukturę wg uwag (AI)" — uwagi trafiają do Agenta AI
 (podpięcie w n8n; na razie zwraca komunikat). Działa też drag&drop Adów, edycja nazw, „Wczytaj JSON",
 ręczne dodawanie placementów/adów/creative (z listy istniejących lub nowe), własny LP per creative,
 oraz „🔁 zastosuj do wszystkich" na każdym creative — dodaje go (lub przemianowuje odpowiednik) na
 wszystkich pozostałych adach w strukturze, zamiast klikać to samo ręcznie na każdym z osobna.
-Gdy żadna kampania nie pasuje do linku, pojawia się **przeglądarka kampanii** advertisera — kliknij
-nazwę, aby rozwinąć jej strony docelowe, albo „Użyj tej kampanii", aby zbudować propozycję wprost na niej.
+**Wybór kampanii.** Gdy ścieżka linku pasuje do istniejącej kampanii, narzędzie od razu buduje na niej
+strukturę — ale przy nazwie kampanii jest **„🔄 zmień kampanię"**: wybór innej (albo utworzenie nowej)
+**przebudowuje propozycję od zera** dla tej kampanii, z tego samego linku i zipa (numer linii, statusy
+`nowe`/`istnieje` i licznik tagów są przeliczane; ręczne zmiany w drzewie przepadają).
+Gdy nic nie pasuje, ten sam wybór pojawia się od razu po analizie. W obu miejscach jest **przeglądarka
+kampanii** advertisera (klik w nazwę rozwija jej strony docelowe) oraz pole nazwy + **„➕ Nowa kampania"**
+(prefill = reszta ścieżki URL) — kampania powstaje dopiero przy „Wykonaj w CM360".
 
 ### 2. Pełny pipeline z CLI (alternatywa)
 Podgląd planu bez zapisu (dry-run), albo realny zapis + tagi na koncie testowym:
@@ -71,9 +80,25 @@ py parser/parse_zip.py "<plik.zip>"
 py scripts/export_tags.py <campaignId> <creativeId> <adId>[,<adId>...]
 ```
 
+## Agenci AI (opcjonalnie, przez n8n)
+
+Dwie role: **(a)** podpowiada strukturę w punktach niskiej pewności, **(b)** interpretuje uwagi
+i przerabia strukturę. Model żyje w n8n (klucz API nie ląduje na laptopie), prompty i schematy
+w repo. Instalacja i workflow do importu: [n8n/README.md](n8n/README.md). Włączenie:
+
+```bash
+set N8N_STRUCTURE_URL=https://n8n.firma/webhook/cm-worker-structure
+set N8N_INTENT_URL=https://n8n.firma/webhook/cm-worker-intent
+set N8N_TOKEN=<wspólny sekret z węzłem „Zbuduj żądanie”>
+```
+
+Bez tych zmiennych narzędzie działa jak dotąd — przyciski AI pokazują „nie podpięte”.
+Rola (a) zwraca **tylko sugestie**; rola (b) zwraca operacje edycyjne, które Python stosuje
+deterministycznie i pokazuje jako diff (z listą pominiętych i pytaniami agenta).
+
 ## Testy
 ```bash
-py tests/test_matcher.py ; py tests/test_proposal.py ; py tests/test_orchestrate.py
+py tests/test_matcher.py ; py tests/test_proposal.py ; py tests/test_orchestrate.py ; py tests/test_create_site.py ; py tests/test_ai_agents.py
 ```
 
 ## Struktura repo
@@ -106,7 +131,13 @@ tests/              # testy offline rdzenia
   Ta sama ścieżka + to samo źródło, inny query (`sprzedawca`) → **pytanie** (reuse vs nowa linia).
 - **Ad** = wymiar (GDN) / wariant (DemGen) / `KV_wym_karta` (FB karuzela); jeden Ad trzyma wiele creative (linii).
 - **LP linii** trzeba **dodać do listy stron docelowych kampanii** zanim zadziała (robione trikiem `defaultLandingPageId`-cycle).
-- **Nowa kampania**: data końca = start + 5 lat; `euPoliticalAdsDeclaration` = brak treści politycznych.
+- **Nowy Site**: `sites.insert` na **wskazanym** wpisie Site Directory to zwykły zapis; utworzenie
+  nowego wpisu w katalogu (`directorySites.insert`) wymaga jawnej zgody — wpisy są ogólnokontowe
+  i nieusuwalne, a na tym koncie Site często wisi na wpisie o innej nazwie (`CG_GDN` →
+  `CG_remarketing`). `/api/commit` odmawia realnego zapisu, jeśli Site jeszcze nie istnieje.
+- **Nowa kampania**: start = dziś, data końca = start + 5 lat; `euPoliticalAdsDeclaration` = brak treści
+  politycznych. CM wymaga `defaultLandingPageId`, więc **LP linii powstaje przed kampanią** — i tym samym
+  jest od razu na jej liście stron docelowych (bez triku default-cycle).
 
 ## Status / dalej
 - ✅ Pipeline end-to-end na żywym koncie testowym: match → parser → propozycja(+pytania) → zapis → tagi `.xls`.

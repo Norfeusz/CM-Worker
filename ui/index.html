@@ -205,7 +205,7 @@
       );
     }
 
-    function CampaignBrowser({ onPick }) {
+    function CampaignBrowser({ onPick, currentId }) {
       const [campaigns, setCampaigns] = useState(null);
       const [openId, setOpenId] = useState(null);
       const [lpsById, setLpsById] = useState({});
@@ -243,8 +243,11 @@
                 onClick={() => toggle(c)}>
                 <span>{openId === c.id ? '▾' : '▸'}</span>
                 <b>{c.name}</b> <span className="hint">id={c.id}</span>
+                {c.id === currentId && <span className="hint"> · bieżąca</span>}
                 <div style={{ flex: 1 }} />
-                <button className="btn mini" onClick={e => { e.stopPropagation(); onPick(c.id); }}>Użyj tej kampanii</button>
+                <button className="btn mini" disabled={c.id === currentId}
+                  onClick={e => { e.stopPropagation(); onPick(c.id); }}>
+                  {c.id === currentId ? 'Używana' : 'Użyj tej kampanii'}</button>
               </div>
               {openId === c.id && (
                 <div style={{ padding: '6px 10px' }}>
@@ -264,7 +267,29 @@
       );
     }
 
-    function InputPanel({ onResult }) {
+    // Choose the campaign to build on: an existing one, or a brand-new one by name.
+    // Used both when nothing matched the link and when swapping the matched campaign.
+    function CampaignPicker({ pathHint, currentId, busy, onPickExisting, onCreateNew }) {
+      const [name, setName] = useState(pathHint || '');
+      return (
+        <div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="text" value={name} onChange={e => setName(e.target.value)}
+              placeholder="nazwa nowej kampanii" style={{ flex: 1 }} />
+            <button className="btn primary" disabled={busy || !name.trim()}
+              onClick={() => onCreateNew(name.trim())}>➕ Nowa kampania</button>
+          </div>
+          <div className="hint" style={{ marginTop: 6 }}>
+            Kampania powstanie dopiero przy „Wykonaj w CM360” — wcześniej zobaczysz dry-run.
+            Ustawienia domyślne: start dziś, koniec +5 lat, brak treści politycznych;
+            LP tego linku staje się domyślną stroną docelową kampanii.
+          </div>
+          <CampaignBrowser onPick={onPickExisting} currentId={currentId} />
+        </div>
+      );
+    }
+
+    function InputPanel({ onResult, rebuildRef, onCanRebuild }) {
       const [link, setLink] = useState('');
       const [source, setSource] = useState('GDN');
       const [message, setMessage] = useState('');
@@ -275,6 +300,7 @@
       const [siteQ, setSiteQ] = useState('');
       const [siteRes, setSiteRes] = useState(null);
       const [siteNote, setSiteNote] = useState('');
+      const [newSite, setNewSite] = useState(null);   // {name, url, dsId, dsName, allowNew, plan}
       const searchSites = async () => {
         setSiteNote('Szukam…'); setSiteRes(null);
         try {
@@ -282,21 +308,40 @@
           setSiteRes(await r.json()); setSiteNote('');
         } catch (e) { setSiteNote('Błąd: ' + e); }
       };
-      const addSite = async () => {
-        const name = prompt('Nazwa nowego site (Site Directory):', siteQ);
-        if (!name) return;
-        const url = prompt('URL site:', 'https://');
-        const r = await fetch('/api/create-site', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, url }),
-        });
-        const d = await r.json();
-        setSiteNote(d.note || JSON.stringify(d));
+      // Site creation is two-step on purpose: plan (dry-run, also resolves the Site
+      // Directory entry) and only then the real insert.
+      const callCreateSite = async (dryRun) => {
+        const s = newSite;
+        setSiteNote(dryRun ? 'Planuję…' : 'Zapisuję w CM360…');
+        try {
+          const r = await fetch('/api/create-site', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: s.name, url: s.url, directorySiteId: s.dsId || null,
+                                   allowNewDirectorySite: !!s.allowNew, dryRun }),
+          });
+          const d = await r.json();
+          if (d.error) { setSiteNote('Błąd: ' + d.error); return; }
+          if (dryRun) {
+            setNewSite(x => ({ ...x, plan: d }));
+            setSiteNote('');
+          } else {
+            setNewSite(null);
+            setSiteNote(`Dodano Site „${d.name}" (id=${d.siteId})`
+              + (d.createdDirectorySite ? ' + nowy wpis w Site Directory' : ' na istniejącym wpisie katalogu'));
+            searchSites();
+          }
+        } catch (e) { setSiteNote('Błąd: ' + e); }
       };
       const [suggestData, setSuggestData] = useState(null);
+      const [noteErr, setNoteErr] = useState(false);
+      const fail = msg => { setNoteErr(true); setNote(msg); };
       const runAnalyze = async (extra) => {
-        if (!link || !file) { setNote('Podaj adres LP i wybierz plik .zip'); return; }
-        setBusy(true); setNote(''); setSuggestData(null);
+        // Nazwij BRAKUJĄCY element wprost — "podaj link i wybierz plik" nie mówi, którego
+        // z dwóch brakuje, a szary hint obok przycisku łatwo przeoczyć.
+        if (!link && !file) return fail('Nie podałeś adresu LP ani nie wybrałeś pliku .zip');
+        if (!link) return fail('Nie podałeś adresu LP');
+        if (!file) return fail('Nie wybrałeś pliku .zip');
+        setBusy(true); setNote(''); setNoteErr(false); setSuggestData(null);
         try {
           const b64 = await new Promise((res, rej) => {
             const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
@@ -307,13 +352,17 @@
             body: JSON.stringify({ link, source, message, zipB64: b64, zipName: file.name, ...(extra || {}) }),
           });
           const data = await resp.json();
-          if (data.error) setNote('Błąd: ' + data.error);
-          else if (data.suggestNewCampaign) { setSuggestData(data); setNote(''); }
-          else { onResult(data); setNote('Zbudowano propozycję ✓'); }
-        } catch (e) { setNote('Błąd (uruchom przez serve.py, nie http.server): ' + e); }
+          if (data.error) fail(data.error);
+          else if (data.suggestNewCampaign) { setSuggestData(data); setNote(''); setNoteErr(false); }
+          else { onResult(data); setNoteErr(false); setNote('Zbudowano propozycję ✓'); }
+        } catch (e) { fail('Nie udało się połączyć z serve.py: ' + e); }
         setBusy(false);
       };
       const analyze = () => runAnalyze();
+      // expose the analysis to the campaign card above, so swapping the campaign can
+      // rebuild the structure with the SAME link/zip/source/message (no re-entry)
+      useEffect(() => { if (rebuildRef) rebuildRef.current = runAnalyze; });
+      useEffect(() => { if (onCanRebuild) onCanRebuild(!!(link && file)); }, [!!link, !!file]);
       return (
         <div className="card">
           <div className="lines-title">📝 Nowe zlecenie</div>
@@ -340,10 +389,61 @@
                     <div style={{ marginTop: 8 }}>
                       <div className="hint">Na koncie ({siteRes.account.length}):</div>
                       {siteRes.account.map(s => <div key={s.id}>🟢 {s.name} <span className="hint">id={s.id}</span></div>)}
-                      <div className="hint" style={{ marginTop: 6 }}>Site Directory ({siteRes.directory.length}):</div>
-                      {siteRes.directory.slice(0, 8).map(s => <div key={s.id}>📁 {s.name} <span className="hint">{s.url}</span></div>)}
+                      <div className="hint" style={{ marginTop: 6 }}>
+                        Site Directory ({siteRes.directory.length}) — „użyj” podepnie Site pod
+                        ten istniejący wpis katalogu (tak działa większość Site na tym koncie):</div>
+                      {siteRes.directory.slice(0, 8).map(s => (
+                        <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span>📁 {s.name} <span className="hint">{s.url}</span></span>
+                          <div style={{ flex: 1 }} />
+                          <button className="btn mini" onClick={() => setNewSite({
+                            name: siteQ || s.name, url: s.url || '', dsId: s.id, dsName: s.name,
+                            allowNew: false, plan: null })}>użyj</button>
+                        </div>
+                      ))}
                       <div style={{ marginTop: 8 }}>
-                        <button className="btn mini" onClick={addSite}>Nie ma? Dodaj do Site Directory</button>
+                        <button className="btn mini" onClick={() => setNewSite({
+                          name: siteQ, url: 'https://', dsId: null, dsName: null,
+                          allowNew: false, plan: null })}>➕ Dodaj Site do konta</button>
+                      </div>
+                    </div>
+                  )}
+                  {newSite && (
+                    <div className="qcard" style={{ marginTop: 10 }}>
+                      <div className="lead">➕ Nowy Site na koncie</div>
+                      <label>Nazwa Site (tak zobaczysz go w drzewie CM)
+                        <input type="text" value={newSite.name}
+                          onChange={e => setNewSite(x => ({ ...x, name: e.target.value, plan: null }))} /></label>
+                      {newSite.dsId
+                        ? <div className="hint" style={{ marginTop: 6 }}>
+                            Wpis katalogu: <b>{newSite.dsName}</b> <span className="hint">id={newSite.dsId}</span>{' '}
+                            <button className="btn link mini"
+                              onClick={() => setNewSite(x => ({ ...x, dsId: null, dsName: null, plan: null }))}>
+                              odepnij</button>
+                          </div>
+                        : <label style={{ marginTop: 6 }}>URL (wymagany przez CM tylko formalnie — na koncie to atrapy)
+                            <input type="text" value={newSite.url}
+                              onChange={e => setNewSite(x => ({ ...x, url: e.target.value, plan: null }))} /></label>}
+                      {newSite.plan && <div className="hint" style={{ marginTop: 8 }}>
+                        Plan: {newSite.plan.resolution}
+                        {newSite.plan.needsNewDirectorySite
+                          ? ' → trzeba utworzyć NOWY wpis w Site Directory (globalny, nieusuwalny)'
+                          : ` → sites.insert na wpisie id=${newSite.plan.directorySiteId}`}
+                      </div>}
+                      {newSite.plan && newSite.plan.needsNewDirectorySite && (
+                        <label style={{ marginTop: 6, display: 'block' }}>
+                          <input type="checkbox" checked={!!newSite.allowNew}
+                            onChange={e => setNewSite(x => ({ ...x, allowNew: e.target.checked }))} />
+                          {' '}Tak, utwórz też nowy wpis w Site Directory
+                        </label>
+                      )}
+                      <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                        <button className="btn mini" disabled={!newSite.name.trim()}
+                          onClick={() => callCreateSite(true)}>Zaplanuj (dry-run)</button>
+                        <button className="btn primary mini"
+                          disabled={!newSite.plan || (newSite.plan.needsNewDirectorySite && !newSite.allowNew)}
+                          onClick={() => callCreateSite(false)}>Zapisz w CM360 →</button>
+                        <button className="btn mini" onClick={() => setNewSite(null)}>Anuluj</button>
                       </div>
                     </div>
                   )}
@@ -358,7 +458,11 @@
             <div>
               <button className="btn primary" disabled={busy} onClick={analyze}>
                 {busy ? 'Analizuję…' : 'Analizuj → zbuduj propozycję'}</button>
-              {note && <span className="hint" style={{ marginLeft: 10 }}>{note}</span>}
+              {note && (noteErr
+                ? <span style={{ marginLeft: 10, padding: '3px 8px', borderRadius: 6,
+                                 background: '#fdecea', color: '#8a1c12',
+                                 border: '1px solid #f5c6c0', fontWeight: 600 }}>⚠️ {note}</span>
+                : <span className="hint" style={{ marginLeft: 10 }}>{note}</span>)}
             </div>
             {suggestData && (
               <div className="qcard">
@@ -366,9 +470,11 @@
                 <div className="hint" style={{ marginBottom: 8 }}>
                   Możesz ręcznie przejrzeć istniejące kampanie i ich strony docelowe poniżej —
                   jeśli któraś jednak pasuje, kliknij „Użyj tej kampanii”. W przeciwnym razie
-                  utwórz nową kampanię (osobny krok).
+                  nazwij nową kampanię i zbuduj propozycję na niej.
                 </div>
-                <CampaignBrowser onPick={cid => runAnalyze({ campaignId: cid })} />
+                <CampaignPicker pathHint={suggestData.pathHint} busy={busy}
+                  onPickExisting={cid => runAnalyze({ campaignId: cid })}
+                  onCreateNew={name => runAnalyze({ newCampaign: name })} />
               </div>
             )}
           </div>
@@ -456,6 +562,10 @@
 
       const clone = () => JSON.parse(JSON.stringify(p));
       const commit = np => setP(np);
+      const rebuildRef = useRef(null);          // InputPanel's runAnalyze (same link/zip)
+      const [canRebuild, setCanRebuild] = useState(false);
+      const [changeCamp, setChangeCamp] = useState(false);
+      const rebuildOn = extra => { setChangeCamp(false); setCommitRes(null); rebuildRef.current(extra); };
       const [siteStruct, setSiteStruct] = useState(null);  // existing {placements:[{name,ads:[{name,creatives}]}]}
       function loadProposal(np) {
         setP(np);
@@ -473,6 +583,8 @@
       const [answers, setAnswers] = useState({});
       const [remarks, setRemarks] = useState('');
       const [aiNote, setAiNote] = useState('');
+      const [aiResult, setAiResult] = useState(null);   // diff operacji od agenta (b)
+      const [assistRes, setAssistRes] = useState(null); // podpowiedzi agenta (a)
       const [commitRes, setCommitRes] = useState(null);
 
       const questions = (p && p.questions) || [];
@@ -603,16 +715,33 @@
 
       async function refine() {
         if (!remarks.trim()) { setAiNote('Wpisz uwagi, co poprawić.'); return; }
-        setAiNote('Wysyłam uwagi do Agenta AI…');
+        setAiNote('Wysyłam uwagi do Agenta AI…'); setAiResult(null);
         try {
           const resp = await fetch('/api/refine', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ proposal: p, answers, remarks }),
           });
           const d = await resp.json();
-          if (d.error) setAiNote('Błąd: ' + d.error);
-          else if (d.proposal) { loadProposal(d.proposal); setRemarks(''); setAiNote('Agent AI poprawił strukturę ✓'); }
-          else setAiNote('Agent AI: ' + (d.notes || '(brak zmian — podpięcie w n8n)'));
+          if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+          setAiResult(d);
+          if (d.proposal) loadProposal(d.proposal);
+          setRemarks('');
+          setAiNote(`Agent zastosował ${d.applied} zmian`
+            + (d.skipped ? `, pominął ${d.skipped}` : '')
+            + (d.unclear && d.unclear.length ? `, ma ${d.unclear.length} pytań` : '') + ' ✓');
+        } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+      }
+
+      async function assist() {
+        setAiNote('Pytam Agenta o pomoc ze strukturą…'); setAssistRes(null);
+        try {
+          const resp = await fetch('/api/assist', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proposal: p }),
+          });
+          const d = await resp.json();
+          if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+          setAssistRes(d.suggestions); setAiNote('Agent zwrócił podpowiedzi ✓');
         } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
       }
 
@@ -624,7 +753,16 @@
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ proposal: eff, answers, dryRun }),
           });
-          setCommitRes(await r.json());
+          const d = await r.json();
+          setCommitRes(d);
+          // a campaign created just now must stop being "new", otherwise a second
+          // commit would try to create it all over again
+          if (!dryRun && d.campaignId && !p.campaign.id) {
+            const np = clone();
+            np.campaign.id = d.campaignId;
+            np.campaign.status = 'existing';
+            commit(np);
+          }
         } catch (e) { setCommitRes({ error: String(e) }); }
       }
 
@@ -643,7 +781,7 @@
           </header>
 
           <div className="wrap">
-            <InputPanel onResult={loadProposal} />
+            <InputPanel onResult={loadProposal} rebuildRef={rebuildRef} onCanRebuild={setCanRebuild} />
 
             {!p && <div className="card"><span className="hint">Wprowadź adres LP i wgraj plik .zip w karcie „Nowe zlecenie", a następnie kliknij „Analizuj → zbuduj propozycję".</span></div>}
 
@@ -651,10 +789,22 @@
             <div className="card">
               <div className="meta">
                 <span className="k">Kampania</span>
-                <span><EditableText value={p.campaign.name} onChange={v => { const np = clone(); np.campaign.name = v; commit(np); }} /> <Badge s={p.campaign.status} /> <span className="hint">id={p.campaign.id || '— (nowa)'}</span></span>
+                <span><EditableText value={p.campaign.name} onChange={v => { const np = clone(); np.campaign.name = v; commit(np); }} /> <Badge s={p.campaign.status} /> <span className="hint">id={p.campaign.id || '— (nowa)'}</span>
+                  {canRebuild && <button className="btn link mini" style={{ marginLeft: 8 }}
+                    onClick={() => setChangeCamp(s => !s)}>
+                    {changeCamp ? '▾ ukryj' : '🔄 zmień kampanię'}</button>}</span>
                 <span className="k">Źródło → Site</span>
                 <span><b>{p.source}</b> <span className="arrow">→</span> {p.site.name} <Badge s={p.site.status} /></span>
               </div>
+              {changeCamp && <div className="qcard" style={{ marginTop: 10 }}>
+                <div className="hint" style={{ marginBottom: 8 }}>
+                  Wybór innej kampanii (albo utworzenie nowej) <b>przebuduje strukturę od zera</b> dla
+                  tej kampanii — z tego samego linku i zipa. Ręczne zmiany w drzewie przepadną.
+                </div>
+                <CampaignPicker pathHint={p.line && p.line.path} currentId={p.campaign.id}
+                  onPickExisting={cid => rebuildOn({ campaignId: cid })}
+                  onCreateNew={name => rebuildOn({ newCampaign: name })} />
+              </div>}
             </div>
 
             <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer} />
@@ -672,14 +822,88 @@
                   placeholder="nazwa nowego placementu" />
               </div>
 
+              {p.ai && p.ai.escalations && p.ai.escalations.length > 0 && (
+                <div className="qcard" style={{ marginBottom: 12 }}>
+                  <div className="lead">🤖 Punkty niskiej pewności ({p.ai.escalations.length})</div>
+                  <div className="hint" style={{ marginBottom: 6 }}>
+                    Tu reguły deterministyczne nie wystarczyły. Agent może podpowiedzieć —
+                    podpowiedzi <b>nie zmieniają drzewa</b>, decydujesz Ty.
+                  </div>
+                  {p.ai.escalations.map((e, i) => (
+                    <div key={i} style={{ padding: '2px 0' }}>
+                      <b>{e.code}</b> <span className="hint">· {e.reason}</span>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn" disabled={!(p.ai.wired || {}).structure} onClick={assist}>
+                      🤖 Poproś Agenta o podpowiedzi</button>
+                    {!(p.ai.wired || {}).structure &&
+                      <span className="hint" style={{ marginLeft: 10 }}>
+                        nie podpięte — ustaw <code>N8N_STRUCTURE_URL</code></span>}
+                  </div>
+                </div>
+              )}
+
+              {assistRes && (
+                <div className="qcard" style={{ marginBottom: 12 }}>
+                  <div className="lead">🤖 Podpowiedzi Agenta (nic jeszcze nie zmieniono)</div>
+                  <div className="hint">pewność: {assistRes.confidence}</div>
+                  {(assistRes.group_mappings || []).map((g, i) => (
+                    <div key={i} style={{ padding: '2px 0' }}>
+                      📁 <b>{g.folder}</b> <span className="arrow">→</span> {g.source} / {g.site} / placement <b>{g.placement}</b>
+                      <span className="hint"> · adKey {g.adKey} · {g.confidence} · {g.reason}</span>
+                    </div>
+                  ))}
+                  {(assistRes.lines || []).map((l, i) => (
+                    <div key={i} style={{ padding: '2px 0' }}>
+                      🔗 <b>{l.creativeName}</b> <span className="hint">({l.lpName}
+                      {l.audience ? ', ' + l.audience : ''}) → {l.lpUrl}</span>
+                    </div>
+                  ))}
+                  {(assistRes.ad_naming || []).map((a, i) => (
+                    <div key={i} style={{ padding: '2px 0' }}>
+                      📐 {a.unit} <span className="arrow">→</span> <b>{a.adName}</b>
+                      <span className="hint"> · {a.reason}</span>
+                    </div>
+                  ))}
+                  {assistRes.notes && <div className="hint" style={{ marginTop: 6 }}>{assistRes.notes}</div>}
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn mini" onClick={() => setAssistRes(null)}>Zamknij</button>
+                  </div>
+                </div>
+              )}
+
               <div className="form" style={{ maxWidth: 'none', marginBottom: 14 }}>
                 <textarea rows="2" value={remarks} onChange={e => setRemarks(e.target.value)}
                   placeholder="Coś się nie zgadza w strukturze? Napisz co poprawić — Agent AI zinterpretuje uwagi i przygotuje poprawioną strukturę (np. 'Screening to osobny placement', '300x250 ma iść pod linia4')." />
                 <div>
-                  <button className="btn" onClick={refine}>✨ Popraw strukturę wg uwag (AI)</button>
+                  <button className="btn" disabled={!((p.ai || {}).wired || {}).intent} onClick={refine}>
+                    ✨ Popraw strukturę wg uwag (AI)</button>
+                  {!((p.ai || {}).wired || {}).intent &&
+                    <span className="hint" style={{ marginLeft: 10 }}>
+                      nie podpięte — ustaw <code>N8N_INTENT_URL</code></span>}
                   {aiNote && <span className="hint" style={{ marginLeft: 10 }}>{aiNote}</span>}
                 </div>
               </div>
+
+              {aiResult && (
+                <div className="qcard" style={{ marginBottom: 14 }}>
+                  <div className="lead">✨ Co Agent zmienił ({aiResult.applied} z {(aiResult.log || []).length})</div>
+                  {(aiResult.log || []).map((e, i) => (
+                    <div key={i} style={{ padding: '2px 0' }}>
+                      {e.ok ? '✓' : '–'} <b>{e.op}</b> <span className="hint">· {e.detail}</span>
+                    </div>
+                  ))}
+                  {(aiResult.unclear || []).length > 0 && <div style={{ marginTop: 8 }}>
+                    <div className="hint">Agent nie był pewien i pyta — nie zgadywał:</div>
+                    {aiResult.unclear.map((q, i) => <div key={i}>❓ {q}</div>)}
+                  </div>}
+                  {aiResult.notes && <div className="hint" style={{ marginTop: 6 }}>{aiResult.notes}</div>}
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn mini" onClick={() => setAiResult(null)}>Zamknij</button>
+                  </div>
+                </div>
+              )}
 
               <div className="node">
                 <div className="site">

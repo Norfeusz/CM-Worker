@@ -1,0 +1,150 @@
+{
+  "name": "CM Worker — Agent AI (relay)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cm-worker-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        0
+      ],
+      "webhookId": "cm-worker-agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Guard: only accept calls carrying the shared token (set CM_TOKEN below\n// and the same value in the tool's N8N_TOKEN env var). Leave CM_TOKEN empty to\n// disable the check — but then anyone who learns the webhook URL can spend your\n// API budget, so prefer setting it.\nconst CM_TOKEN = '';\n\n// Model config lives HERE, not in the repo — this is the half n8n owns.\nconst MODEL = 'claude-opus-5';\nconst MAX_TOKENS = 16000;\nconst EFFORT = 'high';\n\nconst body = $input.first().json.body ?? $input.first().json;\nconst headers = $input.first().json.headers ?? {};\n\nif (CM_TOKEN && headers['x-cm-token'] !== CM_TOKEN) {\n  throw new Error('Brak lub zły X-CM-Token');\n}\nif (!body || !body.system || !body.schema || !body.input) {\n  throw new Error('Payload musi mieć pola: system, schema, input');\n}\n\n// Structured outputs: the schema is enforced by the API, so the model physically\n// cannot return a shape the tool would reject.\nreturn [{\n  json: {\n    model: MODEL,\n    max_tokens: MAX_TOKENS,\n    system: body.system,\n    thinking: { type: 'adaptive' },\n    output_config: {\n      effort: EFFORT,\n      format: { type: 'json_schema', schema: body.schema }\n    },\n    messages: [\n      { role: 'user', content: JSON.stringify(body.input) }\n    ]\n  }\n}];"
+      },
+      "id": "build",
+      "name": "Zbuduj żądanie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 180000
+        },
+        "contentType": "json"
+      },
+      "id": "call",
+      "name": "Claude (Messages API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        80,
+        0
+      ],
+      "notes": "Credential: Header Auth o nazwie x-api-key i wartością klucza Anthropic."
+    },
+    {
+      "parameters": {
+        "jsCode": "// output_config.format guarantees the first text block is valid JSON matching\n// the schema — but check stop_reason first: a refusal or a max_tokens cut leaves\n// content empty or truncated, and returning that as an answer would be a lie.\nconst r = $input.first().json;\n\nif (r.stop_reason === 'refusal') {\n  throw new Error('Model odmówił: ' + JSON.stringify(r.stop_details ?? {}));\n}\nif (r.stop_reason === 'max_tokens') {\n  throw new Error('Odpowiedź ucięta na max_tokens — zwiększ MAX_TOKENS w węźle „Zbuduj żądanie”.');\n}\n\nconst text = (r.content ?? []).filter(b => b.type === 'text').map(b => b.text).join('');\nif (!text) {\n  throw new Error('Brak treści w odpowiedzi (stop_reason=' + r.stop_reason + ')');\n}\n\nreturn [{ json: JSON.parse(text) }];"
+      },
+      "id": "parse",
+      "name": "Wyciągnij JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Odpowiedz",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ],
+      "notes": "firstIncomingItem zwraca json pierwszego elementu bez wyrazenia — respondWith:json + JSON.stringify() dawalo pusta odpowiedz 200."
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Zbuduj żądanie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zbuduj żądanie": {
+      "main": [
+        [
+          {
+            "node": "Claude (Messages API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude (Messages API)": {
+      "main": [
+        [
+          {
+            "node": "Wyciągnij JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wyciągnij JSON": {
+      "main": [
+        [
+          {
+            "node": "Odpowiedz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

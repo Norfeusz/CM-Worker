@@ -6,32 +6,74 @@ creatives are simple 1x1 TRACKING_TEXT templates (CM here = tracking/tags only).
 
 Size ids (from live inspection): placement 1x1 = "31"; tracking creative = "255".
 """
+import datetime
 import json
 
 TRACKING_CREATIVE_SIZE = "255"   # 0x0 tracking size used by TRACKING_TEXT creatives
 PLACEMENT_1x1_SIZE = "31"        # 1x1
+CAMPAIGN_YEARS = 5               # new campaign length: start + 5 years (user's convention)
 
 
-def create_site(svc, profile_id, name, url=None, directory_site_id=None, dry_run=True):
-    """Add a source/Site to the account, mirroring CM's cascade:
-    reuse a Site Directory entry if it exists (by exact name) else create one
-    (directorySites.insert), then link it to the account (sites.insert)."""
+def resolve_directory_site(svc, profile_id, name, directory_site_id=None):
+    """(directorySiteId|None, human-readable how) for a Site about to be created:
+    an explicitly chosen id wins, otherwise an exact (case-insensitive) name match in
+    the Site Directory. Read-only, so it is safe to call in dry-run too."""
+    if directory_site_id:
+        return directory_site_id, "wskazany przez użytkownika"
+    if svc is None:
+        return None, "bez połączenia z API (nie sprawdzono katalogu)"
+    found = svc.directorySites().list(profileId=profile_id, searchString=name,
+                                      maxResults=25).execute().get("directorySites", [])
+    exact = [d for d in found if (d.get("name") or "").lower() == name.lower()]
+    if exact:
+        return exact[0]["id"], f"dopasowany po nazwie w Site Directory ({exact[0]['name']})"
+    return None, f"brak dokładnego dopasowania w Site Directory ({len(found)} podobnych)"
+
+
+def create_site(svc, profile_id, name, url=None, directory_site_id=None,
+                allow_new_directory_site=False, dry_run=True):
+    """Add a source/Site to the account, mirroring CM's "select a site" cascade:
+    resolve a Site Directory entry, then link it to the account (sites.insert).
+
+    Creating a brand-new Site Directory entry is gated behind allow_new_directory_site.
+    Directory sites are account-wide and cannot be deleted, and this account routinely
+    points a Site at a differently-named directory site (Site 'CG_GDN' -> dirSite
+    'CG_remarketing'), so matching by name alone would silently mint duplicates.
+    Prefer passing a directory_site_id that the user picked from the search results.
+
+    Returns the inserted Site resource, annotated with _directorySiteId and
+    _createdDirectorySite; in dry-run a plan dict with the same resolution info.
+    """
+    dsid, how = resolve_directory_site(svc, profile_id, name, directory_site_id)
+    plan = {"_dryRun": True, "name": name, "directorySiteId": dsid, "resolution": how,
+            "needsNewDirectorySite": dsid is None}
+
+    if dsid is None and not allow_new_directory_site:
+        if dry_run:
+            print(f"[DRY-RUN] create_site '{name}': {how} -> wymaga zgody na nowy wpis "
+                  f"w Site Directory (url={url or '-'})")
+            return plan
+        raise RuntimeError(
+            f"create_site '{name}': {how}. Wpis w Site Directory jest globalny i "
+            f"nieusuwalny — wskaż directory_site_id albo jawnie ustaw "
+            f"allow_new_directory_site=True.")
+
     if dry_run:
-        print(f"[DRY-RUN] create_site '{name}' (dir search/insert + sites.insert, url={url})")
-        return {"_dryRun": True, "name": name}
-    dsid = directory_site_id
-    if not dsid:
-        found = svc.directorySites().list(profileId=profile_id, searchString=name,
-                                          maxResults=10).execute().get("directorySites", [])
-        exact = [d for d in found if (d.get("name") or "").lower() == name.lower()]
-        if exact:
-            dsid = exact[0]["id"]
-        else:
-            ds = svc.directorySites().insert(
-                profileId=profile_id, body={"name": name, "url": url or ""}).execute()
-            dsid = ds["id"]
-    return svc.sites().insert(profileId=profile_id,
+        steps = ("sites.insert" if dsid else
+                 f"directorySites.insert (url={url or ''}) + sites.insert")
+        print(f"[DRY-RUN] create_site '{name}': {how} -> {steps}")
+        return plan
+
+    created_ds = False
+    if dsid is None:
+        ds = svc.directorySites().insert(
+            profileId=profile_id, body={"name": name, "url": url or ""}).execute()
+        dsid, created_ds = ds["id"], True
+    site = svc.sites().insert(profileId=profile_id,
                               body={"name": name, "directorySiteId": dsid}).execute()
+    site["_directorySiteId"] = dsid
+    site["_createdDirectorySite"] = created_ds
+    return site
 
 
 def landing_page(svc, profile_id, advertiser_id, name, url, dry_run=True):
@@ -41,6 +83,34 @@ def landing_page(svc, profile_id, advertiser_id, name, url, dry_run=True):
               f"{json.dumps(payload, ensure_ascii=False, indent=2)}")
         return {"_dryRun": True, "payload": payload}
     return svc.advertiserLandingPages().insert(profileId=profile_id, body=payload).execute()
+
+
+def campaign_dates(start_date=None, years=CAMPAIGN_YEARS):
+    """(startDate, endDate) as YYYY-MM-DD. End = start + N years (project default:
+    campaigns are open-ended trackers, so we don't ask for an end date)."""
+    start = datetime.date.fromisoformat(start_date) if start_date else datetime.date.today()
+    try:
+        end = start.replace(year=start.year + years)
+    except ValueError:                      # 29.02 in a non-leap target year
+        end = start.replace(year=start.year + years, day=28)
+    return start.isoformat(), end.isoformat()
+
+
+def campaign(svc, profile_id, advertiser_id, name, default_lp_id,
+             start_date, end_date, dry_run=True):
+    """Create a campaign. CM requires a defaultLandingPageId, so the line's landing
+    page must already exist — that also registers it in the campaign's LP list."""
+    payload = {
+        "name": name, "advertiserId": advertiser_id,
+        "startDate": start_date, "endDate": end_date,
+        "defaultLandingPageId": default_lp_id,
+        # standing decision (never ask per campaign): our campaigns are not political
+        "euPoliticalAdsDeclaration": "DOES_NOT_CONTAIN_EU_POLITICAL_ADS",
+    }
+    if dry_run:
+        print(f"[DRY-RUN] campaigns.insert\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
+        return {"_dryRun": True, "payload": payload}
+    return svc.campaigns().insert(profileId=profile_id, body=payload).execute()
 
 
 def creative(svc, profile_id, advertiser_id, name, dry_run=True):

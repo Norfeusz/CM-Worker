@@ -1,4 +1,5 @@
 """Offline test of orchestrator decision branches (dry-run touches no API)."""
+import datetime
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -116,6 +117,40 @@ check("niebo creative appended with its OWN LP",
 check("plain linia3 creative uses the SHARED line LP",
       any("creative=linia3 " in e["detail"] and "linia2-GDN" in e["detail"] for e in ad_entries) or
       any("append creative linia3 " in e["detail"] and "linia2-GDN" in e["detail"] for e in ad_entries), True)
+
+print("\nNOWA kampania (status=new, brak id): LP linii -> kampania -> site/creative/placement/ad,\n"
+      "plus jeden creative z własnym LP (musi trafić na listę stron docelowych osobno):")
+camp_brand_new = {"id": None, "name": "Household 09.2026 - nowa", "status": "new"}
+proposal4 = B.build_proposal("GDN", parsed, camp_brand_new, line,
+                             target_url="https://x/nieruchomosci/promocja")
+proposal4["placements"][0]["ads"][0]["creatives"].append(
+    {"name": "linia2-niebo", "type": "html5", "packaged": False, "source_path": None,
+     "status": "new", "lpName": "linia2-niebo-GDN", "lpUrl": "https://x/niebo"})
+state4 = {"sites_by_name": {"CG_GDN": "SITE1"}, "placements": {}, "ads": {},
+          "ad_creatives": {}, "creatives_by_name": {},
+          "lps_by_name": {}, "adv_lp_by_name_url": {}}
+
+orch4 = Orchestrator(svc=None, profile_id="P", advertiser_id="A",
+                     campaign=camp_brand_new, dry_run=True)
+log4 = orch4.run(proposal4, state4)
+kinds = [e["kind"] for e in log4]
+
+print()
+check("kampania -> CREATE", [e["action"] for e in log4 if e["kind"] == "campaign"], ["CREATE"])
+check("LP linii powstaje PRZED kampanią (wymagany defaultLandingPageId)",
+      kinds.index("landingPage") < kinds.index("campaign"), True)
+check("kampania powstaje PRZED placementem",
+      kinds.index("campaign") < kinds.index("placement"), True)
+check("LP linii nie jest rejestrowana osobno (jest defaultem kampanii)",
+      [e["name"] for e in log4 if e["kind"] == "campaign-LP"], ["linia2-niebo-GDN"])
+check("start = dziś", orch4.start_date, datetime.date.today().isoformat())
+check("koniec = start + 5 lat",
+      datetime.date.fromisoformat(orch4.end_date).year
+      - datetime.date.fromisoformat(orch4.start_date).year, 5)
+check("nowa kampania: everything below it is CREATE (site istnieje -> REUSE)",
+      {e["kind"]: e["action"] for e in log4 if e["kind"] in ("site", "creative", "placement")},
+      {"site": "REUSE", "creative": "CREATE", "placement": "CREATE"})
+check("orkiestrator przyjął id nowej kampanii", orch4.cid, "(new)")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

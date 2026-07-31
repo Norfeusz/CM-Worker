@@ -1,0 +1,147 @@
+{
+  "name": "CM Worker — Agent AI (Gemini, relay)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cm-worker-agent",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        0
+      ],
+      "webhookId": "cm-worker-agent"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Guard: only accept calls carrying the shared token (set CM_TOKEN below and the\n// same value in the tool's N8N_TOKEN env var). Empty = check disabled, but then\n// anyone who learns the webhook URL can spend your API budget.\nconst CM_TOKEN = '';\n\n// Model config lives HERE, not in the repo — this is the half n8n owns.\n// Stable options (sprawdź w swojej konsoli, na który masz limity):\n//   gemini-3.5-flash       — najmocniejszy do zadań agentowych/kodowych  (domyślny)\n//   gemini-3.6-flash       — balans szybkość/inteligencja\n//   gemini-3.5-flash-lite  — najtańszy, gdy koszt zacznie przeszkadzać\nconst MODEL = 'gemini-3.5-flash';\n\nconst body = $input.first().json.body ?? $input.first().json;\nconst headers = $input.first().json.headers ?? {};\n\nif (CM_TOKEN && headers['x-cm-token'] !== CM_TOKEN) {\n  throw new Error('Brak lub zły X-CM-Token');\n}\nif (!body || !body.system || !body.schema || !body.input) {\n  throw new Error('Payload musi mieć pola: system, schema, input');\n}\n\n// The system prompt is folded into `input` rather than sent as a separate field:\n// `input` is guaranteed to carry the prompt on this endpoint, so this avoids\n// depending on a system-instruction field whose shape we did not verify.\nconst prompt = body.system\n  + '\\n\\n--- DANE WEJSCIOWE (JSON) ---\\n'\n  + JSON.stringify(body.input);\n\n// Structured output: the schema is enforced by the API, so the model cannot return\n// a shape the tool would reject. Gemini accepts standard JSON Schema here, so the\n// repo's schema is passed through unchanged — no dialect translation needed.\nreturn [{\n  json: {\n    model: MODEL,\n    input: prompt,\n    response_format: {\n      type: 'text',\n      mime_type: 'application/json',\n      schema: body.schema\n    }\n  }\n}];"
+      },
+      "id": "build",
+      "name": "Zbuduj żądanie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/interactions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "call",
+      "name": "Gemini (Interactions API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        80,
+        0
+      ],
+      "notes": "Credential: Header Auth o nazwie x-goog-api-key i wartością klucza Gemini."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Interactions API: wygenerowany tekst siedzi w kroku o type === \"model_output\",\n// w jego content[] jako {type:\"text\", text:\"...\"}. UWAGA: przed nim moze wystapic\n// krok \"thought\", wiec szukamy kroku po typie, nigdy po indeksie. Pole `output_text`\n// z przykladow w dokumentacji to akcesor SDK — w surowym REST go NIE MA.\nconst r = $input.first().json;\n\n// status rozstrzyga niepowodzenie wprost, zamiast zgadywac z bledu parsowania\nconst status = r.status || (r.interaction && r.interaction.status) || null;\nif (status && status !== 'completed') {\n  throw new Error('Gemini nie ukonczylo generowania (status=' + status + '). '\n    + 'incomplete/budget_exceeded = odpowiedz ucieta; failed = blad po stronie modelu. '\n    + 'Zrzut: ' + JSON.stringify(r).slice(0, 500));\n}\n\nfunction extractText(obj) {\n  // 1) gdyby jakas warstwa jednak podala akcesor SDK\n  if (typeof obj.output_text === 'string' && obj.output_text) return obj.output_text;\n\n  // 2) wlasciwa sciezka REST: steps[] -> model_output -> content[] -> text\n  const steps = obj.steps || (obj.interaction && obj.interaction.steps) || [];\n  const parts = [];\n  for (const s of steps) {\n    if (!s || s.type !== 'model_output') continue;\n    for (const c of (s.content || [])) {\n      if (c && c.type === 'text' && typeof c.text === 'string') parts.push(c.text);\n    }\n  }\n  if (parts.length) return parts.join('');\n\n  // 3) stary kształt generateContent — na wypadek przelaczenia endpointu\n  const cand = (obj.candidates || [])[0];\n  if (cand) {\n    const p = (((cand.content || {}).parts) || [])\n      .map(function (x) { return x && x.text; }).filter(Boolean);\n    if (p.length) return p.join('');\n  }\n  return null;\n}\n\nconst text = extractText(r);\nif (!text) {\n  // Diagnostyka od razu w komunikacie, zeby nie zgadywac przy nastepnym bledzie\n  throw new Error('Nie znalazlem tekstu w odpowiedzi Gemini. '\n    + 'Pola najwyzszego poziomu: [' + Object.keys(r).join(', ') + ']. '\n    + 'Typy krokow: [' + ((r.steps || []).map(function (s) { return s && s.type; })\n        .join(', ') || 'brak steps') + ']. '\n    + 'Fragment: ' + JSON.stringify(r).slice(0, 300));\n}\n\nlet parsed;\ntry {\n  parsed = JSON.parse(text);\n} catch (e) {\n  throw new Error('Tekst modelu nie jest poprawnym JSON (status=' + status + '). '\n    + 'Jesli to proza, a nie JSON — response_format zostal zignorowany. '\n    + 'Poczatek: ' + String(text).slice(0, 300));\n}\n\nreturn [{ json: parsed }];"
+      },
+      "id": "parse",
+      "name": "Wyciągnij JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        0
+      ],
+      "notes": "Tekst: steps[] -> type=model_output -> content[] -> text. output_text to akcesor SDK, w REST nie istnieje."
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Odpowiedz",
+      "notes": "firstIncomingItem zwraca json pierwszego elementu bez żadnego wyrażenia — respondWith:json + JSON.stringify() dawało pustą odpowiedź 200.",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Zbuduj żądanie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zbuduj żądanie": {
+      "main": [
+        [
+          {
+            "node": "Gemini (Interactions API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini (Interactions API)": {
+      "main": [
+        [
+          {
+            "node": "Wyciągnij JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wyciągnij JSON": {
+      "main": [
+        [
+          {
+            "node": "Odpowiedz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

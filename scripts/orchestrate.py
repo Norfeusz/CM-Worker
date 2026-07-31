@@ -34,16 +34,20 @@ class Orchestrator:
         self.pid = profile_id
         self.adv = advertiser_id
         self.campaign = campaign
-        self.cid = campaign["id"]
+        self.cid = campaign.get("id")
         self.dry = dry_run
         self.log = []
-        sd = campaign["startDate"]
-        ed = campaign["endDate"]
-        self.start_date, self.end_date = sd, ed
+        # a campaign to be created has no id/dates yet -> project defaults (start today,
+        # end +5y); an existing one keeps its own flight so placements/ads fit inside it
+        self.is_new_campaign = campaign.get("status") == "new" or not self.cid
+        if self.is_new_campaign:
+            self.start_date, self.end_date = W.campaign_dates(campaign.get("startDate"))
+        else:
+            self.start_date, self.end_date = campaign["startDate"], campaign["endDate"]
         # ad startTime must not be in the past -> use now+5min (still within campaign)
         now = datetime.datetime.utcnow() + datetime.timedelta(minutes=5)
         self.start_time = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        self.end_time = f"{ed}T23:59:00.000Z"
+        self.end_time = f"{self.end_date}T23:59:00.000Z"
 
     def _rec(self, action, kind, name, rid=None, detail=""):
         self.log.append({"action": action, "kind": kind, "name": name, "id": rid, "detail": detail})
@@ -57,36 +61,71 @@ class Orchestrator:
             return cr["lpName"], cr.get("lpUrl") or ""
         return proposal["line"]["lpName"], proposal["line"]["url"] or ""
 
+    def _ensure_lp(self, name, url, state):
+        """Resolve an existing landing page by name (in campaign) or name+url (on the
+        advertiser), else create it. Returns (lpId, alreadyInThisCampaign)."""
+        in_campaign = name in state["lps_by_name"]
+        lp_id = state["lps_by_name"].get(name) or state["adv_lp_by_name_url"].get((name, url))
+        if lp_id:
+            self._rec("REUSE", "landingPage", name, lp_id)
+        else:
+            r = W.landing_page(self.svc, self.pid, self.adv, name, url, dry_run=self.dry)
+            lp_id = r.get("id", "(new)")
+            self._rec("CREATE", "landingPage", name, r.get("id"), url)
+        return lp_id, in_campaign
+
+    def _create_campaign(self, default_lp_id):
+        """Create the campaign and adopt its id for everything that follows."""
+        r = W.campaign(self.svc, self.pid, self.adv, self.campaign["name"], default_lp_id,
+                       self.start_date, self.end_date, dry_run=self.dry)
+        self.cid = r.get("id", "(new)")
+        self.campaign = dict(self.campaign, id=self.cid, startDate=self.start_date,
+                             endDate=self.end_date, defaultLandingPageId=default_lp_id)
+        self._rec("CREATE", "campaign", self.campaign["name"], r.get("id"),
+                  f"{self.start_date}..{self.end_date}, default LP={default_lp_id}, "
+                  f"brak treści politycznych")
+
     def run(self, proposal, state):
-        print(f"CAMPAIGN {self.cid} '{self.campaign['name']}'  "
-              f"({'DRY-RUN' if self.dry else 'REAL WRITE'})  dates {self.start_date}..{self.end_date}\n")
+        head = (f"NEW CAMPAIGN '{self.campaign['name']}'" if self.is_new_campaign
+                else f"CAMPAIGN {self.cid} '{self.campaign['name']}'")
+        print(f"{head}  ({'DRY-RUN' if self.dry else 'REAL WRITE'})  "
+              f"dates {self.start_date}..{self.end_date}\n")
         site = proposal["site"]["name"]
         line_lp_name = proposal["line"]["lpName"]
 
         # 1) landing pages: resolve/create every DISTINCT LP referenced anywhere in the
         # proposal — normally just the shared line LP, but a creative may override its
         # own (e.g. linia4-słońce / linia4-niebo pointing at two different URLs).
-        lp_wanted = dict([(proposal["line"]["lpName"], proposal["line"]["url"] or "")] + [
+        lp_wanted = dict([(line_lp_name, proposal["line"]["url"] or "")] + [
             self._lp_key(proposal, cr) for pl in proposal["placements"]
             for a in pl["ads"] for cr in a["creatives"]])
+
+        # 1a) the LINE LP goes first and alone: creating a campaign requires a
+        # defaultLandingPageId, so for a NEW campaign it must exist beforehand.
         lp_ids = {}
+        line_lp_id, line_in_campaign = self._ensure_lp(
+            line_lp_name, lp_wanted.pop(line_lp_name), state)
+        lp_ids[line_lp_name] = line_lp_id
+
+        # 1b) the campaign itself — for a new one, passing the line LP as its default
+        # IS the registration, so no default-cycle is needed for it
+        if self.is_new_campaign:
+            self._create_campaign(line_lp_id)
+            line_in_campaign = True
+        if not line_in_campaign:
+            first_line = not self.campaign.get("defaultLandingPageId")
+            W.add_lp_to_campaign(self.svc, self.pid, self.cid, line_lp_id,
+                                 make_default=first_line, dry_run=self.dry)
+            self._rec("REGISTER", "campaign-LP", line_lp_name, line_lp_id,
+                      "as default (first line)" if first_line else "added to campaign list")
+
+        # 1c) any per-creative LP overrides — never eligible to become the default
         for name, url in lp_wanted.items():
-            lp_in_campaign = name in state["lps_by_name"]
-            lp_id = state["lps_by_name"].get(name) or state["adv_lp_by_name_url"].get((name, url))
-            if lp_id:
-                self._rec("REUSE", "landingPage", name, lp_id)
-            else:
-                r = W.landing_page(self.svc, self.pid, self.adv, name, url, dry_run=self.dry)
-                lp_id = r.get("id", "(new)")
-                self._rec("CREATE", "landingPage", name, r.get("id"), url)
-            # register in the campaign's landing-page list (unless already there); only
-            # the shared LINE LP is eligible to become the campaign default
-            if not lp_in_campaign:
-                first_line = not self.campaign.get("defaultLandingPageId") and name == line_lp_name
+            lp_id, in_campaign = self._ensure_lp(name, url, state)
+            if not in_campaign:
                 W.add_lp_to_campaign(self.svc, self.pid, self.cid, lp_id,
-                                     make_default=first_line, dry_run=self.dry)
-                self._rec("REGISTER", "campaign-LP", name, lp_id,
-                          "as default (first line)" if first_line else "added to campaign list")
+                                     make_default=False, dry_run=self.dry)
+                self._rec("REGISTER", "campaign-LP", name, lp_id, "added to campaign list")
             lp_ids[name] = lp_id
 
         # 2) site (reuse; creation is an edge case that needs directory-site linkage)
