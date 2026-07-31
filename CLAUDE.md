@@ -48,8 +48,19 @@ py scripts/serve.py        # backend stdlib (bez npm) — serwuje UI + całe API
 ```bash
 start http://127.0.0.1:8765/
 ```
+
+**Z warstwą AI: `start.bat`** (gitignorowany, user ma go u siebie; szablon to
+`start.example.bat`). Ustawia `N8N_STRUCTURE_URL`, `N8N_INTENT_URL`, `N8N_TOKEN` i startuje
+serwer w jednym — bo `set` obowiązuje tylko w bieżącym oknie, a `serve.py` musi wystartować
+w tym samym. **Zmienne czyta na starcie**, więc po edycji promptów w `ai_agents.py`
+konieczny jest restart (moduł siedzi w pamięci procesu; objawia się identyczną odpowiedzią
+po poprawce).
+
+**Nie stawiaj `serve.py` jako swojego zadania w tle** — trzy razy padł, bo jego czas życia
+jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkownika o dwuklik na
+`start.bat`; własny proces stawiaj tylko na czas konkretnej weryfikacji.
 Testy offline: `py tests/test_matcher.py`, `test_proposal.py`, `test_orchestrate.py`,
-`test_create_site.py`, `test_ai_agents.py` (106/106 zielone na dzień pisania tego pliku —
+`test_create_site.py`, `test_ai_agents.py` (131/131 zielone na dzień pisania tego pliku —
 uruchom je jako pierwszy krok, żeby potwierdzić, że nic się nie popsuło od ostatniej sesji).
 `test_ai_agents.py` stawia udawany webhook n8n na localhoście, więc testuje też transport
 i odrzucanie złych odpowiedzi — bez sieci i bez klucza API.
@@ -83,6 +94,8 @@ scripts/
   ai_agents.py       # DWIE ROLE AGENTÓW: prompty, schematy, walidacja, transport do n8n,
                       #    deterministyczne stosowanie operacji (apply_ops) — patrz sekcja niżej
   serve.py           # backend: serwuje ui/ + całe REST API (patrz niżej) — GŁÓWNY punkt wejścia
+                      #    friendly_error(): surowe wyjątki -> komunikaty z działaniem (brak
+                      #    sieci/VPN, timeout, TLS, wygasły token OAuth, HttpError z CM360)
   demo.py            # CLI: cały pipeline end-to-end bez UI (do szybkich testów/debugowania)
   plan_writes.py     # ⚠️ LEGACY — wczesny prototyp planera, ZASTĄPIONY przez orchestrate.py.
                       #    Nic go nie importuje. Bezpiecznie zignorować lub usunąć.
@@ -170,7 +183,15 @@ Obie role przetestowane end-to-end na prawdziwym modelu. Rzeczy, które kosztowa
 5. Model potrafi być nadgorliwy: przy zipie bez podfolderów zwracał `group_mappings` z pustym
    `folder`. Prompt tego zakazuje (bo taka reguła trafiłaby do configu przez promocję i
    zostałaby tam na zawsze) — poprawka zweryfikowana, pole wraca teraz puste.
-6. **Generyczna koperta operacji WYMAGA tabeli pól w promptcie.** `INTENT_SCHEMA` ma jeden
+6. **Rola (b) musi widzieć zawartość zipa.** `build_intent_request` wysyłał tylko `remarks`
+   + `structure` (nazwy węzłów). Na uwagę „wymiary zgodnie z zawartością paczki zip" agent
+   **słusznie** zwrócił zero operacji z notatką, że nie ma tych danych — zachował się
+   poprawnie na niepełnym kontrakcie. Teraz dokładany jest `zip` z `ai.request.zip` (leży już
+   w propozycji, odłożony dla roli (a) — bez ponownego uploadu i parsowania). Prompt mówi
+   też, że **nowo utworzony placement jest PUSTY**, więc jeśli uwagi implikują zawartość,
+   agent ma dorzucić `add_ad` od razu, a nie pytać w drugiej rundzie. Po poprawce na żywym
+   Gemini: paczka GIF/HTML/PNG + uwagi użytkownika → **14 operacji, 0 pominiętych**.
+7. **Generyczna koperta operacji WYMAGA tabeli pól w promptcie.** `INTENT_SCHEMA` ma jeden
    kształt operacji (`placement/ad/creative/name/to/lpName/lpUrl`), więc schemat nie jest w
    stanie wymusić, które pole znaczy co przy której operacji. Bez jawnej tabeli Gemini
    rozumiał zlecenie poprawnie, ale wstawiał nazwy w inne pola i **3 z 4 operacji były po
@@ -232,7 +253,18 @@ Nazwy Ad/Placement pochodzą z konwencji zip+source; linie/audience pochodzą z 
 - ✅ Propozycja na *nowej* kampanii (nazwa z UI, prefill z resztą ścieżki URL) — plan zapisu
   z `CREATE campaign` sprawdzony w dry-run; realnego zapisu jeszcze nie robiliśmy
 - ✅ Okienko uwag → `/api/refine` (seam gotowy, AI jeszcze nie podłączone)
-- ✅ Repo na GitHub: **github.com/Norfeusz/CM-Worker** (prywatne, branch `main`)
+- ✅ Repo na GitHub: **github.com/Norfeusz/CM-Worker** (prywatne)
+
+### Stan repo na koniec sesji 30.07.2026
+Cała praca tej sesji siedzi na gałęzi **`feat/campaign-site-and-ai-agents`** (wypchniętej),
+`main` jest nietknięty i stoi na initial commicie. **PR nie został jeszcze otwarty** —
+`gh` nie jest zainstalowany, więc user robi to kliknięciem:
+`https://github.com/Norfeusz/CM-Worker/pull/new/feat/campaign-site-and-ai-agents`
+
+Commity (po granicach plików, bez rozcinania hunków): nowa kampania + Site → agenci AI →
+API i UI → dokumentacja → 4 poprawki z żywych testów. Working tree czysty.
+`start.bat` (adresy webhooków + token) jest gitignorowany i **nie ma go w historii** —
+sprawdzone. Przed każdym commitem skanuj repo na `cg-pl.app.n8n.cloud`, `sk-ant`, `AIza`.
 
 ## Decyzje domenowe potwierdzone przez użytkownika, ale JESZCZE NIEZAIMPLEMENTOWANE
 
@@ -255,6 +287,53 @@ folder→placement dla GDN) + rozszerzenie `GROUP_KEYWORDS`, i analogiczna paczk
 już modelu.
 
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
+
+0. **WIELE LP W JEDNYM ZLECENIU — najnowsze zadanie od użytkownika (30.07.2026), nietknięte.**
+
+   Dziś jedno zlecenie = **jeden link** = jedna linia (`/api/build-proposal` bierze `link`
+   jako string, `matcher.resolve_line` liczy jedną linię). Docelowo user chce wkleić **kilka
+   LP naraz** — wszystkie trafiają do **tej samej kampanii** — a narzędzie ma **samo
+   spróbować przypisać materiały do LP**, analizując link i nazwy folderów w zipie.
+
+   Przykład, o którym mówimy: zip z folderami `prospecting/` i `remarketing/` (albo
+   `slonce/`, `niebo/`) + dwa LP różniące się `utm_medium=prospecting` /
+   `utm_medium=remarketing`. Materiały z folderu mają wylądować na linii tego LP, którego
+   URL pasuje do nazwy folderu.
+
+   **Co już jest gotowe i nie trzeba tego pisać od nowa:**
+   - **Kształt wyjściowy istnieje i jest przetestowany.** Jeden Ad może nieść wiele creative,
+     a każdy creative może mieć **własny LP** (`creative.lpName` / `creative.lpUrl`).
+     Orkiestrator to obsługuje (`Orchestrator._lp_key`), tworzy każdy distinct LP i
+     rejestruje go w kampanii — pokryte testami w `test_orchestrate.py` (przypadek
+     `linia3-slonce` / `linia3-niebo` z osobnymi LP). **Ścieżki zapisu NIE trzeba ruszać.**
+   - **Rola (a) już wyciąga wiele linii z wiadomości** — `STRUCTURE_SCHEMA.lines` zwraca
+     listę `{lpUrl, source, audience, lpName, creativeName}` i na żywym Gemini działa
+     poprawnie (zweryfikowane: dwa LP prospecting/remarketing → dwie linie, prawidłowe
+     nazwy). Czyli inteligencja do interpretacji LP w dużej części istnieje.
+   - Konwencja nazw: LP = `linia{N}-{ŹRÓDŁO}`, a przy wielu LP na linię
+     `linia{N}-{wariant}-{ŹRÓDŁO}`; creative = `linia{N}-{audience}`.
+
+   **Co trzeba dopisać:**
+   1. **Wejście**: `/api/build-proposal` musi przyjąć listę linków (np. `links: [...]`,
+      zachowując `link` dla zgodności) + pole w UI na kilka adresów (jeden na linię).
+   2. **Dopasowanie deterministyczne folder ↔ LP** — to sedno zadania i to ma być
+      rdzeń, nie AI. Sygnały: człony ścieżki i parametry query LP (`utm_medium`,
+      `utm_content`, `sprzedawca`) kontra nazwa folderu w zipie (`parse_zip` zwraca
+      `variant` = folder najwyższego poziomu i `group`). Normalizacja: lowercase, bez
+      polskich znaków, dopasowanie po zawieraniu w obie strony.
+   3. **Numeracja linii dla kilku LP naraz** — `matcher.resolve_line` woła się per LP na
+      **tej samej** liście LP kampanii; uwaga: dwa nowe LP w jednym zleceniu nie mogą
+      dostać tego samego numeru, a `resolve_line` liczy `max_no + 1` z *istniejących* LP,
+      więc trzeba dokładać już przydzielone w tej sesji. To realna pułapka.
+      `detect_line_conflict` też trzeba puścić per LP.
+   4. **Eskalacja przy niejednoznaczności** — gdy folderu nie da się przypisać (albo
+      pasuje do kilku LP), nowy kod eskalacji w `ai_fallback.escalations()` (np.
+      `lp_material_mapping`) i pytanie sterujące w UI. Dopasowania zatwierdzone przez
+      użytkownika są **kandydatem do promocji** przez `promote.py` (punkt 4 niżej).
+
+   **Uwaga na kolejność prac:** to zadanie i `promote.py` mocno się zazębiają. Sensowniej
+   zrobić najpierw dopasowanie deterministyczne + eskalację, a promocję dopiąć jako jeden
+   mechanizm dla wszystkich decyzji AI, niż budować promocję dwa razy.
 
 1. **Tworzenie nowej kampanii — ZAIMPLEMENTOWANE, ale NIGDY NIE URUCHOMIONE NA ŻYWO.**
    `cm_write.campaign()` + gałąź `campaign.status=="new"` w orkiestratorze + `newCampaign`
