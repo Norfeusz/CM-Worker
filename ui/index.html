@@ -7,22 +7,38 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Lexend — font z cubegroup.pl. Wagi 400/500 to te, których używa strona.
+       Gdy sieć firmowa nie puści Google Fonts, wchodzi ten sam stos zapasowy,
+       co na stronie, więc układ się nie rozjedzie. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    /* Paleta i typografia odczytane z żywej strony cubegroup.pl (computed styles),
+       nie z oka: akcent #5172FF, ciemny #03050A, tło #F7F8FF, obramowania #EAEBF2,
+       tekst wyciszony #65666C, przyciski w kształcie pigułki (radius 100px, waga 500),
+       karty o promieniu 16px. */
     :root {
-      --bg:#f4f5f7; --panel:#fff; --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb;
-      --new:#16a34a; --new-bg:#dcfce7; --exist:#64748b; --exist-bg:#eef2f6;
-      --accent:#4f46e5; --accent-bg:#eef2ff; --danger:#dc2626;
+      --bg:#f7f8ff; --panel:#fff; --ink:#03050a; --muted:#65666c; --line:#eaebf2;
+      --dark:#03050a;
+      --new:#16a34a; --new-bg:#dcfce7; --exist:#65666c; --exist-bg:#eff0f6;
+      --accent:#5172ff; --accent-bg:#edf0ff; --accent-line:#c9d3ff;
+      --accent-soft:#b9c7ff; --danger:#ff3333;
+      --radius-card:16px; --radius-pill:100px;
     }
     * { box-sizing:border-box; }
-    body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif;
-      background:var(--bg); color:var(--ink); }
+    body { margin:0; background:var(--bg); color:var(--ink);
+      font:400 14px/1.5 Lexend,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+        Oxygen-Sans,Ubuntu,Cantarell,"Helvetica Neue",sans-serif; }
     /* Sticky: przy 45 adach i 100+ tagach strona jest długa, a „Zatwierdź strukturę”
        i wskaźnik pracy muszą być widoczne bez skrolowania na górę. */
+    /* Ciemny pasek jak sekcje nawigacyjne na cubegroup.pl. Przyciski w środku zostają
+       jasne, więc kontrast rośnie, a nie spada. */
     header { position:sticky; top:0; z-index:50;
-      background:var(--panel); border-bottom:1px solid var(--line);
-      padding:14px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
-      box-shadow:0 1px 3px rgba(16,24,40,.06); }
-    header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:.2px; }
+      background:var(--dark); color:#fff;
+      padding:14px 22px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+      box-shadow:0 2px 14px rgba(3,5,10,.18); }
+    header h1 { font-size:16px; margin:0; font-weight:500; letter-spacing:.1px; color:#fff; }
 
     /* --- wskaźniki pracy ------------------------------------------------------
        Jedno źródło prawdy w App (`pending`), żeby KAŻDE oczekiwanie było widoczne.
@@ -34,7 +50,7 @@
       animation:spin .7s linear infinite; }
     .spinner.big { width:20px; height:20px; border-width:3px; }
     .busy-chip { display:flex; align-items:center; gap:9px; font-size:13px; font-weight:600;
-      color:var(--accent); background:var(--accent-bg); border:1px solid #dcd9fb;
+      color:var(--accent); background:var(--accent-bg); border:1px solid var(--accent-line);
       padding:6px 13px; border-radius:999px; }
     /* pasek na samej krawędzi ekranu — widoczny nawet gdy chip jest poza kadrem */
     @keyframes slide { from { left:-40%; } to { left:100%; } }
@@ -50,8 +66,9 @@
       .topbar i { left:0; width:100%; opacity:.6; }
     }
     .wrap { max-width:1000px; margin:20px auto; padding:0 16px; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-      padding:16px 18px; margin-bottom:16px; }
+    .card { background:var(--panel); border:1px solid var(--line);
+      border-radius:var(--radius-card); padding:18px 20px; margin-bottom:16px;
+      box-shadow:0 1px 2px rgba(3,5,10,.03); }
     .meta { display:grid; grid-template-columns:auto 1fr; gap:6px 14px; align-items:center; }
     .meta .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
     .badge { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px;
@@ -79,11 +96,17 @@
     .name { font-weight:600; }
     .cre { color:#374151; }
     .spacer { flex:1; }
-    .btn { border:1px solid var(--line); background:#fff; border-radius:7px; padding:6px 11px;
-      font-size:13px; cursor:pointer; color:var(--ink); }
-    .btn:hover { background:#f7f8fa; }
+    /* Przyciski w kształcie pigułki, waga 500 — dokładnie jak CTA na cubegroup.pl
+       (tam radius 100px, padding 12px 28px, weight 500). Padding zmniejszony
+       proporcjonalnie, bo to interfejs roboczy z kilkunastoma przyciskami w rzędzie,
+       a nie strona z jednym CTA na sekcję. */
+    .btn { border:1px solid var(--line); background:#fff; border-radius:var(--radius-pill);
+      padding:7px 16px; cursor:pointer; color:var(--ink);
+      font-family:inherit; font-size:13px; font-weight:500; line-height:1.3;
+      transition:background .15s, border-color .15s, box-shadow .15s; }
+    .btn:hover { background:var(--accent-bg); border-color:var(--accent-line); }
     .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
-    .btn.primary:hover { filter:brightness(1.05); }
+    .btn.primary:hover { background:#3f5cf0; border-color:#3f5cf0; }
     /* Nieklikalny przycisk MUSI to pokazywać. Bez tego wyglądał identycznie jak czynny,
        więc użytkownik klikał w martwy element i nie wiedział, czy to on nie działa, czy
        aplikacja. `!important` bije .primary, które ma własne tło i kolor tekstu. */
@@ -92,15 +115,24 @@
       border-color:#e2e4e8 !important; cursor:not-allowed; filter:none !important; }
     .btn:disabled:hover, .btn[disabled]:hover { background:#f1f2f4 !important; }
     .btn.link:disabled, .btn.link[disabled] { background:none !important; border:none !important; }
-    .btn.mini { padding:2px 7px; font-size:12px; }
-    .btn.link { border:none; background:none; color:var(--accent); padding:2px 6px; }
+    .btn.mini { padding:3px 11px; font-size:12px; }
+    .btn.link { border:none; background:none; color:var(--accent); padding:2px 6px;
+      border-radius:6px; }
+    .btn.link:hover { background:var(--accent-bg); border-color:transparent; }
     .btn.del { color:var(--danger); }
     .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .edit { font:inherit; border:1px solid var(--accent); border-radius:5px; padding:1px 6px; }
     .editable:hover { background:#fffbe6; border-radius:4px; outline:1px dashed #e3d38a; cursor:text; }
     .hint { color:var(--muted); font-size:12px; }
-    .tagbar { font-weight:700; }
-    pre { background:#0f172a; color:#e2e8f0; padding:14px; border-radius:8px; overflow:auto;
+    .tagbar { font-weight:600; }
+    /* Pola: ten sam font co reszta (dotąd dziedziczyły systemowy), zaokrąglenie
+       spójne z kartami i wyraźny focus w kolorze marki. */
+    input, textarea, select { font-family:inherit; }
+    input[type=text], textarea { border-radius:10px; }
+    input[type=text]:focus, textarea:focus, select:focus {
+      outline:none; border-color:var(--accent);
+      box-shadow:0 0 0 3px rgba(81,114,255,.16); }
+    pre { background:var(--dark); color:#e9ecf5; padding:14px; border-radius:12px; overflow:auto;
       font-size:12px; max-height:340px; }
     select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:6px; }
     .lines-title { font-weight:700; margin-bottom:10px; }
