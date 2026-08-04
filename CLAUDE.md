@@ -72,10 +72,38 @@ wpis katalogu o tej nazwie istniał, więc zapis przeszedł). **Użytkownik zaak
 wszystkie źródła z `source_map.json` mają dziś swój Site na koncie (patrz `_verified` w tym
 pliku), czyli żadne standardowe zlecenie nie wymaga już tworzenia Site.
 
-**Node.js jest v14 (za stary na Vite) i `npm` jest zepsuty** (EPERM na `C:\Users\admin1`) —
-dlatego UI to samowystarczalny React bez builda (Babel w przeglądarce), serwowany przez
-`scripts/serve.py`. Nie próbuj stawiać buildu React, dopóki użytkownik nie naprawi środowiska
-Node — to świadoma decyzja, nie przeoczenie.
+**Node — NAPRAWIONE (04.08.2026). `npm` NIGDY nie był zepsuty, był ZASŁONIĘTY.**
+Poprzednia diagnoza w tym pliku („npm jest zepsuty, EPERM na `C:\Users\admin1`") była
+myląca. Prawdziwa przyczyna: nvm-for-windows zainstalowano na koncie **`admin1`**, a w
+**systemowym** PATH siedzą dwa wpisy w jego profil — `C:\Users\admin1\AppData\Local\nvm`
+i `C:\nvm4w\nodejs` (symlink → `…\admin1\…\nvm\v14.21.3`). Windows przetwarza PATH
+systemowy **przed** użytkownika, więc `npm` zawsze trafiał na ten symlink; npm rozwiązuje
+ścieżkę swojego modułu i robi `lstat` na `C:\Users\admin1`, czego zwykłe konto nie może →
+`EPERM`. Rozpakowany Node w profilu użytkownika działał cały czas bez zarzutu.
+
+Systemowego PATH **nie da się** poprawić bez admina (user go nie ma) ani nadpisać wpisem
+użytkownika (jest później w kolejności). Dlatego kolejność wymuszamy **per sesja**:
+
+```powershell
+. .\node-env.ps1            # najnowszy dostępny Node (dziś 24.19.0, npm 11.17.0)
+. .\node-env.ps1 -Version 14  # powrót na 14.21.3 (npm 6.14.18), gdy coś tego wymaga
+```
+
+`node-env.ps1` wykrywa wersje z katalogów `nodejs-*` w profilu użytkownika, więc jest
+przenośny. **Uruchamiaj z kropką** — bez niej zmiana PATH ginie z podprocesem.
+Zainstalowane: `~\nodejs-24\node-v24.19.0-win-x64` (ZIP z nodejs.org, suma SHA256
+zweryfikowana) oraz **nietknięty** `~\nodejs-14.21.3\…` — user chce móc wrócić na 14.
+Registry npm sprawdzone: `npm ping` OK, `npm view vite version` → 8.2.0, bez proxy.
+
+**Docelowa naprawa: poprosić IT o usunięcie obu martwych wpisów `admin1` z systemowego
+PATH.** Wtedy `node-env.ps1` przestanie być potrzebny.
+
+UI to nadal samowystarczalny React bez builda (Babel w przeglądarce) serwowany przez
+`scripts/serve.py` — ale **to już nie jest wymuszone środowiskiem, tylko nieodrobioną
+pracą**. Build jest odblokowany. Uwaga przy planowaniu: to już JEST React 18 (UMD z CDN),
+więc „przejście na React" oznaczałoby tylko dodanie builda i rozbicie
+`ui/index.html` (1057 linii) na komponenty — nie zmianę technologii. Poprawki CSS/JSX
+przenoszą się do builda 1:1, więc nie ma powodu ich wstrzymywać.
 
 ## Architektura / mapa plików
 
@@ -375,7 +403,16 @@ już modelu.
    Różni się tym, że tam realnie wgrywamy assety (nie tylko szablon 1×1).
 8. Drobne: obsługa `.7z` bezpośrednio w `parse_zip.py` (dziś tylko `.zip`, choć `py7zr` jest
    zainstalowane i sprawdzone ręcznie), sprzątanie artefaktów testowych w CM360 (nieszkodliwe,
-   user powiedział że narazie nie trzeba), docelowy build React (czeka na naprawę Node/npm).
+   user powiedział że narazie nie trzeba).
+9. **Build React — ODBLOKOWANY** (Node 24 + npm 11 działają, patrz sekcja o Node wyżej).
+   Nie jest to migracja: UI już jest React 18, chodzi o dodanie builda i rozbicie
+   `ui/index.html` na komponenty. **Niższy priorytet niż uwagi do wyglądu/użyteczności** —
+   te przenoszą się do builda bez zmian, więc nie ma sensu na niego czekać.
+10. **Uwagi użytkownika do wyglądu i użyteczności UI** (zgłoszone 04.08.2026, nierobione):
+   górny pasek przyklejony do krawędzi ekranu (sticky header), wyraźniejsza informacja że
+   coś się przetwarza. User miał podać pełną listę — dopytaj o resztę przed startem.
+11. Oznaczać, **po którym LP nastąpiło automatyczne dopasowanie kampanii** (user zgłosił
+   04.08.2026, świadomie odłożone na potem).
 
 ## Styl pracy z tym użytkownikiem (Norbert)
 
