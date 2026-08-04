@@ -97,7 +97,8 @@ STRUCTURE_SCHEMA = {
 }
 
 # Every op below maps to something a trafficker can already do by hand in the UI.
-OPS = ["rename_placement", "rename_ad", "rename_creative", "move_ad", "add_placement",
+OPS = ["rename_placement", "rename_ad", "rename_creative", "rename_creative_all",
+       "move_ad", "add_placement",
        "add_ad", "add_creative", "delete_ad", "delete_creative", "set_creative_lp",
        "apply_creative_to_all"]
 
@@ -211,6 +212,8 @@ as strictly as the schema itself:
   move_ad                placement = SOURCE placement, ad, to = TARGET placement name
   add_creative           placement, ad, name = creative name, optional lpName + lpUrl
   rename_creative        placement, ad, creative = current name, to = new name
+  rename_creative_all    creative = current name, to = new name, optional lpName + lpUrl
+                         (no placement/ad — renames it on EVERY ad that has it)
   delete_creative        placement, ad, creative
   set_creative_lp        placement, ad, creative, lpName, lpUrl
   apply_creative_to_all  name = creative name, optional lpName + lpUrl   (no placement/ad)
@@ -236,8 +239,17 @@ Rules:
   * Set every field you do not need to null (the schema requires all keys present).
   * Anything you cannot confidently turn into an op goes into `unclear` as a short question
     in Polish — do not guess it into an op.
-  * `apply_creative_to_all` adds (or renames the equivalent of) a creative on every ad; use
-    it when the remark says "na wszystkich" / "wszędzie" rather than emitting many ops.
+  * RENAMING A LINE EVERYWHERE is `rename_creative_all`, never `apply_creative_to_all`.
+    "Dopisz coś do nazwy linii", "linie mają nazywać się linia8-firmootwieracz" = a rename.
+    `apply_creative_to_all` ADDS the creative to every ad, so using it for a rename first
+    duplicates every line, and deleting the old names then leaves every line sitting on
+    every ad — destroying which materials each page actually received. This happened; do
+    not repeat it.
+  * `apply_creative_to_all` is only for a remark that genuinely asks to PUT a creative on
+    every ad ("ten creative na wszystkich adach"). Different ads holding different
+    creatives is not untidiness — it records which dimensions each landing page's folder
+    delivered, and the tool refuses to add across a structure shaped that way.
+  * To give one ad a creative it lacks, use `add_creative` on that placement + ad.
 """
 
 
@@ -325,7 +337,22 @@ def n8n_call(url_env, schema, system, timeout=None):
         except urllib.error.HTTPError as e:
             raise AgentError(f"n8n odpowiedziało {e.code}: {e.read()[:300]!r}") from e
         except Exception as e:
-            raise AgentError(f"n8n nieosiągalne ({type(e).__name__}: {e})") from e
+            secs = timeout or DEFAULT_TIMEOUT
+            name = type(e).__name__
+            # A timeout is NOT "unreachable": the connection succeeded and n8n simply
+            # did not answer, which in practice means the model/provider node inside the
+            # workflow hung. Saying "nieosiągalne" sends the user to check the network,
+            # which is the wrong place to look.
+            if name in ("TimeoutError", "timeout", "socket.timeout") or \
+                    "timed out" in str(e).lower():
+                raise AgentError(
+                    f"n8n nie odpowiedziało w ciągu {secs}s. Połączenie działa, więc "
+                    f"najczęściej zawiesił się węzeł modelu w workflow — zajrzyj w n8n "
+                    f"w „Executions”, tam widać prawdziwy błąd (np. brak odpowiedzi "
+                    f"dostawcy). Dłuższy limit: N8N_TIMEOUT w start.bat. [{name}]") from e
+            raise AgentError(
+                f"n8n nieosiągalne — sprawdź sieć/VPN i adres webhooka "
+                f"({name}: {e})") from e
         try:
             data = json.loads(raw)
         except ValueError as e:
@@ -402,12 +429,118 @@ def _find(seq, name):
     return next((x for x in seq if x["name"] == name), None)
 
 
+def _per_folder_shape(placements):
+    """True when ads carry DIFFERENT sets of creatives.
+
+    That difference IS information: it records which landing page actually received
+    which dimensions, straight from the folders of the delivery (`970x250_gif` exists
+    only for the two lines whose folders had that size). Adding one creative to every
+    ad erases it, and no later edit can reconstruct it — so `apply_creative_to_all`
+    refuses to add into a tree shaped this way.
+    """
+    sets = {frozenset(c["name"] for c in (ad.get("creatives") or []))
+            for pl in placements for ad in (pl.get("ads") or []) if ad.get("creatives")}
+    return len(sets) > 1
+
+
 def _new_creative(name, lp_name=None, lp_url=None):
     cr = {"name": name, "type": None, "packaged": False, "source_path": None,
           "status": "new"}
     if lp_name:
         cr["lpName"], cr["lpUrl"] = lp_name, lp_url or ""
     return cr
+
+
+def _full_op(kind, **kw):
+    """An op with every schema key present, as apply_ops expects."""
+    o = {"op": kind, "placement": None, "ad": None, "creative": None, "name": None,
+         "to": None, "lpName": None, "lpUrl": None, "reason": kw.pop("reason", "sugestia agenta (a)")}
+    o.update(kw)
+    return o
+
+
+def suggestions_to_ops(proposal, suggestions):
+    """Translate role (a)'s SUGGESTIONS into role (b)'s ops.
+
+    Accepting a suggestion then travels the same reviewed, deterministic path as a
+    remark — `apply_ops` — instead of a second application engine nobody tested.
+
+    Only what can be applied WITHOUT guessing is translated:
+      * `lines` — matched to this order's landing pages BY URL (never by position), then
+        the creative name and landing page are set wherever that creative already is.
+
+    Deliberately NOT translated, reported in `notes` instead:
+      * `ad_naming` — it asks to SPLIT one ad per file format (160x600 -> _gif/_png/
+        _html), which a rename cannot express: the first rename would consume the ad and
+        the rest would find no target. The deterministic core does this via
+        `fileFormats` in source_map.json, which is where the convention belongs.
+      * `group_mappings` — a lasting folder->placement rule belongs in the config
+        (promote.py), not in a one-off edit of this one tree.
+
+    Returns (ops, notes).
+    """
+    ops, notes = [], []
+    ours = proposal.get("lines") or ([proposal["line"]] if proposal.get("line") else [])
+    by_url = {l.get("url"): l for l in ours if l.get("url")}
+
+    for s in (suggestions or {}).get("lines") or []:
+        cur = by_url.get(s.get("lpUrl"))
+        if not cur:
+            notes.append(f"LP {s.get('lpUrl') or '(brak URL)'} nie należy do tego "
+                         f"zlecenia — pominięte")
+            continue
+        old_cre = cur.get("creativeName")
+        new_cre = (s.get("creativeName") or "").strip() or old_cre
+        new_lp = (s.get("lpName") or "").strip()
+        # only the ads that ALREADY carry this creative. Never `apply_creative_to_all`
+        # here: renaming a line and pointing it at its page must not also hand that line
+        # dimensions its folder never delivered.
+        holders = [(pl["name"], ad["name"])
+                   for pl in proposal.get("placements") or []
+                   for ad in pl.get("ads") or []
+                   if _find(ad.get("creatives") or [], old_cre)]
+        if new_cre != old_cre:
+            for plc, adn in holders:
+                ops.append(_full_op(
+                    "rename_creative", placement=plc, ad=adn, creative=old_cre,
+                    to=new_cre,
+                    reason=f"agent (a): linia {s.get('audience') or new_cre}"))
+        if new_lp and new_lp != cur.get("lpName"):
+            for plc, adn in holders:
+                # the renames above already ran, so address it by its NEW name
+                ops.append(_full_op("set_creative_lp", placement=plc, ad=adn,
+                                    creative=new_cre, lpName=new_lp,
+                                    lpUrl=s.get("lpUrl"),
+                                    reason="agent (a): landing page linii"))
+
+    if (suggestions or {}).get("ad_naming"):
+        notes.append(f"{len(suggestions['ad_naming'])} sugestii nazw adów pominięto — "
+                     f"rozbicie ada na formaty (np. 160x600_gif) robi teraz rdzeń przez "
+                     f"`fileFormats` w source_map.json, przemianowanie tego nie wyraża.")
+    if (suggestions or {}).get("group_mappings"):
+        notes.append(f"{len(suggestions['group_mappings'])} mapowań folderów pominięto — "
+                     f"to trwała reguła do configu (promote.py), nie jednorazowa edycja "
+                     f"tego drzewa.")
+    return ops, notes
+
+
+def apply_suggestions(proposal, suggestions):
+    """Apply the translatable part of role (a)'s suggestions. Returns
+    (new_proposal, log, notes) — same log shape as apply_ops, so the UI shows one diff."""
+    ops, notes = suggestions_to_ops(proposal, suggestions)
+    new_p, log = apply_ops(proposal, ops)
+    # keep the order's line metadata in step with the creatives just renamed/relinked,
+    # otherwise the header still advertises the old names
+    by_url = {s.get("lpUrl"): s for s in (suggestions or {}).get("lines") or []}
+    for ln in new_p.get("lines") or []:
+        s = by_url.get(ln.get("url"))
+        if not s:
+            continue
+        ln["creativeName"] = (s.get("creativeName") or "").strip() or ln["creativeName"]
+        ln["lpName"] = (s.get("lpName") or "").strip() or ln["lpName"]
+    if new_p.get("lines"):
+        new_p["line"] = new_p["lines"][0]
+    return new_p, log, notes
 
 
 def apply_ops(proposal, ops):
@@ -540,19 +673,75 @@ def apply_ops(proposal, ops):
                 old, cr["name"] = cr["name"], o["to"]
                 done(o, f"creative {old!r} -> {o['to']!r} na {where}")
 
+        elif kind == "rename_creative_all":
+            # The op the vocabulary was missing. "Dopisz X do nazwy linii" is a RENAME
+            # across the whole tree; without this the model reached for
+            # apply_creative_to_all, which ADDS — duplicating every line and then, once
+            # the old ones were deleted, leaving every line on every ad. Renaming only
+            # where the creative already is cannot flatten anything.
+            old = o.get("creative") or o.get("name")
+            new = o.get("to")
+            if not old or not new:
+                skip(o, "podaj `creative` (obecna nazwa) i `to` (nowa nazwa)")
+            else:
+                lp_name, lp_url = o.get("lpName"), o.get("lpUrl") or ""
+                renamed = 0
+                for pl_ in pls:
+                    for ad in pl_["ads"]:
+                        cr = _find(ad["creatives"], old)
+                        if not cr or _find(ad["creatives"], new):
+                            continue
+                        cr["name"] = new
+                        if lp_name:
+                            cr["lpName"], cr["lpUrl"] = lp_name, lp_url
+                        renamed += 1
+                if renamed:
+                    done(o, f"creative {old!r} -> {new!r} na {renamed} adach"
+                            + (f", LP {lp_name!r}" if lp_name else "")
+                            + " (nic nie dołożono)")
+                else:
+                    skip(o, f"nie ma creative {old!r} na żadnym adzie")
+
         elif kind == "apply_creative_to_all":
             name = o.get("name") or o.get("creative")
             if not name:
                 skip(o, "brak nazwy creative")
             else:
-                touched = 0
+                lp_name, lp_url = o.get("lpName"), o.get("lpUrl") or ""
+                protect = _per_folder_shape(pls)
+                added = relinked = blocked = 0
                 for pl_ in pls:
                     for ad in pl_["ads"]:
-                        if not _find(ad["creatives"], name):
-                            ad["creatives"].append(
-                                _new_creative(name, o.get("lpName"), o.get("lpUrl")))
-                            touched += 1
-                done(o, f"creative {name!r} dodany na {touched} adach")
+                        cr = _find(ad["creatives"], name)
+                        if cr is None:
+                            if protect:
+                                blocked += 1     # would erase per-folder assignment
+                                continue
+                            ad["creatives"].append(_new_creative(name, lp_name, lp_url))
+                            added += 1
+                        elif lp_name and (cr.get("lpName") != lp_name
+                                          or (cr.get("lpUrl") or "") != lp_url):
+                            # The creative is already on this ad, so an op carrying a
+                            # landing page can only have meant "point it there". Skipping
+                            # it made the whole op a no-op that still reported success —
+                            # with several LPs in one order every creative already exists
+                            # everywhere, so that was every such request.
+                            cr["lpName"], cr["lpUrl"] = lp_name, lp_url
+                            relinked += 1
+                parts = ([f"dodany na {added} adach"] if added else []) + \
+                        ([f"LP {lp_name!r} ustawione na {relinked} adach"] if relinked else [])
+                guard = (f" NIE dołożono na {blocked} adach: materiały są przypisane "
+                         f"według folderów paczki i dołożenie wszędzie zatarłoby to "
+                         f"bezpowrotnie. Zmiana nazwy linii to `rename_creative_all`; "
+                         f"celowe dołożenie na konkretny ad to `add_creative`."
+                         if blocked else "")
+                if parts:
+                    done(o, f"creative {name!r}: " + ", ".join(parts) + guard)
+                else:
+                    # never report an untouched tree as an applied change
+                    skip(o, (f"creative {name!r}:" + guard) if blocked else
+                         f"creative {name!r} jest już na wszystkich adach"
+                         + (f" z LP {lp_name!r}" if lp_name else "") + " — nic do zmiany")
 
         else:
             skip(o, f"nieznana operacja {kind!r}")

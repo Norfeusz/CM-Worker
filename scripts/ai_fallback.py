@@ -6,7 +6,12 @@ where confidence is low, (b) builds a structured request for an AI Agent, and
 `interpret` takes an optional callable so it can be wired to any LLM, and falls back
 to an echo/mock when none is provided.
 """
+import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import matcher
 
 AUDIENCE_TERMS = ["prospecting", "retargeting", "remarketing", "lookalike", "lal",
                   "rmg", "strona_docelowa", "docelowa", "przelotka", "konwersje", "cta"]
@@ -19,7 +24,9 @@ def escalations(parsed, proposal, message="", advertiser_rule=True):
     if not advertiser_rule:
         out.append({"code": "advertiser", "reason": "no URL rule matched the advertiser"})
 
-    groups = parsed.get("groups") or []
+    # folders already resolved as landing-page discriminators are settled, not escalations
+    consumed = set(((proposal.get("lpFolders") or {}).get("consumed")) or [])
+    groups = [g for g in (parsed.get("groups") or []) if g["name"] not in consumed]
     unknown = [g["name"] for g in groups if not g["source_hint"]]
     if unknown:
         out.append({"code": "group_mapping",
@@ -39,6 +46,21 @@ def escalations(parsed, proposal, message="", advertiser_rule=True):
     if any("dimensionless" in w for w in parsed.get("warnings", [])):
         out.append({"code": "structure", "reason": "some zip entries lack a detectable dimension"})
 
+    # several landing pages in one order: the deterministic folder->LP matching left
+    # something undecided, so a human (or the agent) has to say which page a folder
+    # belongs to. Materials sent to the wrong page tag the wrong audience silently.
+    lps = proposal.get("lines") or []
+    stuck = matcher.unresolved_lp_folders(proposal.get("lpFolders"), len(lps))
+    if stuck:
+        out.append({"code": "lp_material_mapping",
+                    "reason": f"cannot assign zip folders to landing pages: "
+                              f"{[s['folder'] for s in stuck]} "
+                              f"(LPs: {[l['lpName'] for l in lps]})",
+                    "folders": stuck,
+                    "landingPages": [{"index": i, "lpName": l["lpName"],
+                                      "creativeName": l["creativeName"], "url": l.get("url")}
+                                     for i, l in enumerate(lps)]})
+
     return out
 
 
@@ -47,6 +69,12 @@ def build_request(parsed, proposal, message, advertiser_list=None):
     return {
         "task_message": message,
         "url": proposal.get("line", {}).get("url"),
+        # several links in one order: the agent must see all of them, plus how far the
+        # deterministic folder->LP matching got, or it will re-answer what is settled
+        "landing_pages": [{"index": i, "lpName": l["lpName"],
+                           "creativeName": l["creativeName"], "url": l.get("url")}
+                          for i, l in enumerate(proposal.get("lines") or [])],
+        "lp_folder_match": proposal.get("lpFolders"),
         "advertiser": proposal.get("site", {}).get("name"),
         "advertiser_list": advertiser_list or [],
         "zip": {

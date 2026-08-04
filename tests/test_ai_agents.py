@@ -117,6 +117,32 @@ check("własny LP zapisany na dołożonym creative",
 check("liczba tagów przeliczalna po zmianach (kontrakt nadal spójny)",
       len(B.compute_tags(np)), len(ADS) * 2)
 
+print("\napply_creative_to_all na creative, który JUŻ jest na wszystkich adach — realny błąd\n"
+      "z żywego testu: przy wielu LP w jednym zleceniu KAŻDY creative jest na każdym adzie,\n"
+      "więc operacja przypisania LP nie robiła nic, a raportowała sukces:")
+np, log = A.apply_ops(base, [op("apply_creative_to_all", name="linia2",
+                               lpName="linia8-GDN", lpUrl="https://x/8")])
+lps = {(c.get("lpName"), c.get("lpUrl"))
+       for a in np["placements"][0]["ads"] for c in a["creatives"]}
+check("LP ustawione na ISTNIEJĄCYCH creative", lps, {("linia8-GDN", "https://x/8")})
+check("zaraportowane jako zastosowane", log[0]["ok"], True)
+check("detail mówi o LP, nie o dodawaniu", "LP" in log[0]["detail"], True)
+check("nie zduplikował creative",
+      {len(a["creatives"]) for a in np["placements"][0]["ads"]}, {1})
+
+np2, log2 = A.apply_ops(np, [op("apply_creative_to_all", name="linia2",
+                               lpName="linia8-GDN", lpUrl="https://x/8")])
+check("powtórzona operacja bez efektu -> POMINIĘTA, a nie fałszywy sukces",
+      log2[0]["ok"], False)
+
+part = A.apply_ops(base, [op("delete_creative", placement=PL, ad=ADS[1],
+                             creative="linia2")])[0]
+np3, log3 = A.apply_ops(part, [op("apply_creative_to_all", name="linia2",
+                                  lpName="linia8-GDN", lpUrl="https://x/8")])
+check("mieszane: dokłada gdzie brak I przelinkowuje gdzie już jest",
+      ("dodany na 1 adach" in log3[0]["detail"],
+       f"ustawione na {len(ADS) - 1} adach" in log3[0]["detail"]), (True, True))
+
 np, log = A.apply_ops(base, [op("delete_creative", placement=PL, ad=ADS[0], creative="linia2")])
 check("delete_creative zostawia ada bez creative",
       len(np["placements"][0]["ads"][0]["creatives"]), 0)
@@ -158,6 +184,123 @@ check("ad rzeczywiście przeniesiony",
 
 np, log = A.apply_ops(base, [op("add_placement")])
 check("nadal odrzuca add_placement bez ŻADNEJ nazwy", log[0]["ok"], False)
+
+print("\nZMIANA NAZWY LINII W CAŁYM DRZEWIE — realny błąd z sesji użytkownika: prośba\n"
+      "„dopisz coś do nazwy linii” to RENAME, ale brakowało takiej operacji, więc model\n"
+      "użył apply_creative_to_all (która DOKŁADA) → duplikaty, a po usunięciu starych\n"
+      "wszystkie linie wylądowały na wszystkich wymiarach:")
+# drzewo z przypisaniem per folder: linia9 tylko na CZĘŚCI adów (jej folder ma mniej wymiarów)
+uneven = A.apply_ops(
+    B.build_proposal("GDN", parsed, camp, lines=[
+        {"lineNumber": 8, "lpName": "linia8-GDN", "creativeName": "linia8",
+         "source": "GDN", "path": "a", "reused": False, "url": "https://x/frc"},
+        {"lineNumber": 9, "lpName": "linia9-GDN", "creativeName": "linia9",
+         "source": "GDN", "path": "b", "reused": False, "url": "https://x/konto"}]),
+    [op("delete_creative", placement=PL, ad=ADS[0], creative="linia9"),
+     op("delete_creative", placement=PL, ad=ADS[1], creative="linia9")])[0]
+before_tags = len(B.compute_tags(uneven))
+check("drzewo ma kształt „per folder” (ady mają RÓŻNE zestawy creative)",
+      A._per_folder_shape(uneven["placements"]), True)
+
+# 1) właściwa droga: rename_creative_all
+np, log = A.apply_ops(uneven, [op("rename_creative_all", creative="linia8",
+                                 to="linia8-firmootwieracz")])
+names = {c["name"] for pl in np["placements"] for a in pl["ads"] for c in a["creatives"]}
+check("rename_creative_all przemianowuje wszędzie", "linia8-firmootwieracz" in names, True)
+check("...i nie zostawia starej nazwy", "linia8" in names, False)
+check("...i NIE zmienia liczby tagów", len(B.compute_tags(np)), before_tags)
+check("...i nie dokłada linii9 tam, gdzie jej nie było",
+      [len(a["creatives"]) for a in np["placements"][0]["ads"][:2]], [1, 1])
+check("raport mówi wprost, że nic nie dołożono",
+      "nic nie dołożono" in log[0]["detail"], True)
+
+# 2) zła droga jest teraz zablokowana
+np2, log2 = A.apply_ops(uneven, [op("apply_creative_to_all",
+                                    name="linia8-firmootwieracz")])
+check("apply_creative_to_all NIE spłaszcza przypisania z folderów",
+      len(B.compute_tags(np2)), before_tags)
+check("...i jest zaraportowane jako POMINIĘTE", log2[0]["ok"], False)
+check("...z podpowiedzią, czego użyć zamiast",
+      "rename_creative_all" in log2[0]["detail"], True)
+
+# 3) w drzewie o jednolitym kształcie dokładanie nadal działa (to jego prawdziwy cel)
+even = B.build_proposal("GDN", parsed, camp, line=line)
+np3, log3 = A.apply_ops(even, [op("apply_creative_to_all", name="linia-nowa")])
+check("jednolite drzewo -> dokładanie nadal dozwolone",
+      (log3[0]["ok"], len(B.compute_tags(np3))),
+      (True, len(B.compute_tags(even)) + len(ADS)))
+
+check("rename_creative_all bez nowej nazwy -> pominięte",
+      A.apply_ops(uneven, [op("rename_creative_all", creative="linia8")])[1][0]["ok"], False)
+check("rename_creative_all nieistniejącej linii -> pominięte",
+      A.apply_ops(uneven, [op("rename_creative_all", creative="nie-ma", to="x")])[1][0]["ok"],
+      False)
+check("rename_creative_all może od razu ustawić LP",
+      {c.get("lpName") for pl in A.apply_ops(uneven, [op(
+          "rename_creative_all", creative="linia8", to="linia8-frc",
+          lpName="linia8-frc-GDN", lpUrl="https://x/frc")])[0]["placements"]
+       for a in pl["ads"] for c in a["creatives"] if c["name"] == "linia8-frc"},
+      {"linia8-frc-GDN"})
+
+print("\nsugestie roli (a) -> operacje roli (b) (jedna sprawdzona ścieżka stosowania):")
+multi = B.build_proposal("GDN", parsed, camp, lines=[
+    {"lineNumber": 8, "lpName": "linia8-GDN", "creativeName": "linia8", "source": "GDN",
+     "path": "a", "reused": False, "url": "https://x/frc"},
+    {"lineNumber": 9, "lpName": "linia9-GDN", "creativeName": "linia9", "source": "GDN",
+     "path": "b", "reused": False, "url": "https://x/konto"}])
+sugg = {"advertiser_guess": None, "group_mappings": [
+            {"folder": "FRC GIF", "source": "GDN", "site": "CG_GDN", "placement": "GIF",
+             "adKey": "dimension", "confidence": 0.9, "reason": "x"}],
+        "ad_naming": [{"unit": "FRC GIF_160x600", "adName": "160x600_gif", "reason": "x"}],
+        "lines": [
+            {"lpUrl": "https://x/frc", "source": "GDN", "audience": "firmootwieracz",
+             "lpName": "linia8-firmootwieracz-GDN", "creativeName": "linia8-firmootwieracz"},
+            {"lpUrl": "https://x/nie-ma-takiego", "source": "GDN", "audience": None,
+             "lpName": "linia99-GDN", "creativeName": "linia99"}],
+        "resolved_questions": [], "confidence": 0.8, "notes": ""}
+np, log, notes = A.apply_suggestions(multi, sugg)
+names = {c["name"] for pl in np["placements"] for a in pl["ads"] for c in a["creatives"]}
+check("creative przemianowany wszędzie, gdzie był",
+      ("linia8-firmootwieracz" in names, "linia8" in names), (True, False))
+check("druga linia nietknięta (sugestia jej nie dotyczyła)", "linia9" in names, True)
+lp8 = {c.get("lpName") for pl in np["placements"] for a in pl["ads"]
+       for c in a["creatives"] if c["name"] == "linia8-firmootwieracz"}
+check("LP linii ustawione na przemianowanym creative", lp8, {"linia8-firmootwieracz-GDN"})
+check("metadane linii nadążyły za drzewem",
+      (np["lines"][0]["creativeName"], np["lines"][0]["lpName"]),
+      ("linia8-firmootwieracz", "linia8-firmootwieracz-GDN"))
+check("LP z obcym URL-em pominięte (dopasowanie po URL, nigdy po pozycji)",
+      any("nie-ma-takiego" in n for n in notes), True)
+check("nazwy adów pominięte z wyjaśnieniem (rozbicie na formaty robi rdzeń)",
+      any("fileFormats" in n for n in notes), True)
+check("mapowania folderów pominięte z wyjaśnieniem (to materiał do configu)",
+      any("promote.py" in n for n in notes), True)
+check("wszystkie przetłumaczone operacje faktycznie się zastosowały",
+      [e["ok"] for e in log], [True] * len(log))
+# przemianowanie linii i wskazanie jej LP NIE MOŻE rozdmuchać struktury: pierwsza wersja
+# używała apply_creative_to_all i dokładała linii wymiary, których jej folder nie miał
+check("liczba tagów bez zmian (żaden creative nie został DOŁOŻONY)",
+      len(B.compute_tags(np)), len(B.compute_tags(multi)))
+check("żadna operacja nie jest typu dokładającego creative",
+      {e["op"] for e in log} <= {"rename_creative", "set_creative_lp"}, True)
+
+# linia obecna tylko na CZĘŚCI adów (tak wygląda paczka, w której folder jednej linii ma
+# mniej wymiarów) — sugestia ma ruszyć tylko te ady, a nie dorobić brakujące
+thin = A.apply_ops(multi, [op("delete_creative", placement=PL, ad=ADS[0],
+                              creative="linia9")])[0]
+before = len(B.compute_tags(thin))
+np_thin, log_thin, _ = A.apply_suggestions(thin, {"lines": [
+    {"lpUrl": "https://x/konto", "source": "GDN", "audience": "konto",
+     "lpName": "linia9-konto-GDN", "creativeName": "linia9-konto"}]})
+check("linia o mniejszym pokryciu nie dostaje brakujących adów",
+      len(B.compute_tags(np_thin)), before)
+check("ad, z którego linię usunięto, jej NIE odzyskał",
+      any(c["name"].startswith("linia9")
+          for c in np_thin["placements"][0]["ads"][0]["creatives"]), False)
+
+check("brak sugestii linii -> zero operacji, ale wyjaśnienia zostają",
+      A.suggestions_to_ops(multi, {"ad_naming": [{"unit": "x", "adName": "y", "reason": ""}]})[0],
+      [])
 
 print("\nprompt roli (b) musi podawać znaczenie pól per operacja "
       "(bez tego model zgaduje i operacje są pomijane):")
