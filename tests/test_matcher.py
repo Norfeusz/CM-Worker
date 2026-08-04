@@ -95,5 +95,100 @@ c2 = M.detect_line_conflict(
     YOUNG, "GDN", young_lps)
 check("different path -> conflict=False", c2["conflict"], False)
 
+print("\nnormalization (folder names vs URL tokens):")
+check("Polish diacritics + separators", M.normalize("Materiały_Słońce 300x250"),
+      "materialy_slonce_300x250")
+check("trims junk edges", M.normalize("  -Prospecting-  "), "prospecting")
+
+print("\nseveral LPs in one order — discriminators:")
+KONTA = ["indywidualny", "konta"]
+BASE = "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/mkonto/"
+PROSP, REMKT = BASE + "?utm_medium=prospecting", BASE + "?utm_medium=remarketing"
+d = M.lp_discriminators([PROSP, REMKT], KONTA)
+check("same path, utm_medium differs -> query value is the token",
+      d, [["prospecting"], ["remarketing"]])
+check("a single URL has nothing to distinguish it",
+      M.lp_discriminators([PROSP], KONTA), [[]])
+d2 = M.lp_discriminators([BASE, BASE.replace("mkonto", "mkonto-intensive")], KONTA)
+check("differing path segments become tokens", d2, [["mkonto"], ["mkonto_intensive"]])
+
+print("\nseveral LPs in one order — line numbering (the max_no+1 trap):")
+two_new = M.resolve_lines([BASE, BASE.replace("mkonto", "mkonto-intensive")],
+                          KONTA, "GDN", [])
+check("two NEW paths in one order get DIFFERENT numbers",
+      [(l["lineNumber"], l["lpName"]) for l in two_new],
+      [(1, "linia1-GDN"), (2, "linia2-GDN")])
+
+variants = M.resolve_lines([PROSP, REMKT], KONTA, "GDN", [])
+check("same path, different utm -> ONE line, two labelled LPs",
+      [(l["lineNumber"], l["lpName"], l["creativeName"]) for l in variants],
+      [(1, "linia1-prospecting-GDN", "linia1-prospecting"),
+       (1, "linia1-remarketing-GDN", "linia1-remarketing")])
+
+check("identical links collapse to one LP",
+      len(M.resolve_lines([PROSP, PROSP], KONTA, "GDN", [])), 1)
+
+# campaign already holds linia1-GDN at exactly the prospecting URL
+EXIST = [{"lpName": "linia1-GDN", "lpUrl": PROSP}]
+mixed = M.resolve_lines([PROSP, REMKT], KONTA, "GDN", EXIST)
+check("known URL keeps its existing LP name (no duplicate LP for one address)",
+      (mixed[0]["lpName"], mixed[0]["creativeName"]), ("linia1-GDN", "linia1"))
+check("its sibling is labelled instead",
+      (mixed[1]["lineNumber"], mixed[1]["lpName"], mixed[1]["creativeName"]),
+      (1, "linia1-remarketing-GDN", "linia1-remarketing"))
+
+# a new line added next to an existing one must not reuse number 1
+after = M.resolve_lines([BASE.replace("mkonto", "oszczedzam"),
+                         BASE.replace("mkonto", "lokata")], KONTA, "GDN", EXIST)
+check("new lines continue after the existing max, without colliding",
+      [l["lineNumber"] for l in after], [2, 3])
+
+print("\nseveral LPs in one order — folder -> LP matching:")
+fm = M.match_folders_to_lps(["prospecting", "remarketing"], d)
+check("folder names matching utm values", fm["map"], {"prospecting": 0, "remarketing": 1})
+fm2 = M.match_folders_to_lps(["Prospecting", "Remarketing_GDN"], d)
+check("case and suffix tolerated (containment both ways)",
+      fm2["map"], {"Prospecting": 0, "Remarketing_GDN": 1})
+fm3 = M.match_folders_to_lps(["GIF", "HTML", "PNG"], d)
+check("format folders are NOT LP folders -> unmatched, left to the placement rules",
+      (fm3["map"], fm3["unmatched"]), ({}, ["GIF", "HTML", "PNG"]))
+
+# real delivery: folder names combine the PRODUCT (which page) with the FILE FORMAT,
+# and the product is only a WORD inside the LP path — no containment either way
+FIRMY = ["firmy", "konta"]
+REAL = ["https://www.mbank.pl/lp2/2026/c1/firmy/konta/firmootwieracz/google/czerwiec/zakladanie-firmy/?sprzedawca=gdn_wizerunek_{device}",
+        "https://www.mbank.pl/lp2/2026/c1/firmy/konta/firmowe/google/czerwiec/konto/?sprzedawca=gdn_wizerunek_{device}",
+        "https://www.mbank.pl/lp2/2026/c1/firmy/konta/firmowe/google/czerwiec/konto-spolka/?sprzedawca=gdn_wizerunek_{device}"]
+rd = M.lp_discriminators(REAL, FIRMY)
+check("identyczny sprzedawca w każdym LP nie jest dyskryminatorem",
+      any("wizerunek" in t for toks in rd for t in toks), False)
+rfm = M.match_folders_to_lps(
+    ["FRC GIF", "FRC PNG", "HTML FRC", "HTML KONTO FIRMOWE", "HTML SPÓŁKA",
+     "KONTO FIRMOWE GIF", "KONTO FIRMOWE PNG", "SPÓŁKA GIF", "SPÓŁKA JPG"], rd)
+check("SPÓŁKA * -> LP z konto-spolka (wspólne SŁOWO, nie zawieranie)",
+      {f: i for f, i in rfm["map"].items() if "SP" in f},
+      {"HTML SPÓŁKA": 2, "SPÓŁKA GIF": 2, "SPÓŁKA JPG": 2})
+check("FRC * -> nierozstrzygnięte (skrót od firmootwieracz jest niewyprowadzalny)",
+      sorted(f for f in rfm["unmatched"] if "FRC" in f),
+      ["FRC GIF", "FRC PNG", "HTML FRC"])
+check("KONTO FIRMOWE * -> niejednoznaczne (pasuje i do /konto/, i do /konto-spolka/)",
+      sorted(a["folder"] for a in rfm["ambiguous"]),
+      ["HTML KONTO FIRMOWE", "KONTO FIRMOWE GIF", "KONTO FIRMOWE PNG"])
+
+AMB = [BASE + "?sprzedawca=gdn_rmg_a", BASE + "?sprzedawca=gdn_rmg_b"]
+fm4 = M.match_folders_to_lps(["gdn_rmg"], M.lp_discriminators(AMB, KONTA))
+check("folder fitting both LPs -> ambiguous, never guessed",
+      (fm4["map"], fm4["ambiguous"]), ({}, [{"folder": "gdn_rmg", "candidates": [0, 1]}]))
+
+print("\nlabel fallback (URL token unusable -> matched folder name):")
+check("bare id is not a readable label", M.lp_label(["12345"]), None)
+check("falls back to the folder", M.lp_label(["12345"], "Prospecting"), "prospecting")
+check("hash-like id is not readable", M.lp_label(["a3f9c081"], None), None)
+ids = M.resolve_lines([BASE + "?utm_content=12345", BASE + "?utm_content=67890"],
+                      KONTA, "GDN", [], labels={0: "prospecting", 1: "remarketing"})
+check("unreadable URL tokens + folder labels -> usable LP names",
+      [l["lpName"] for l in ids],
+      ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
