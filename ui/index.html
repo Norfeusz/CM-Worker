@@ -650,7 +650,15 @@
       const [over, setOver] = useState(null);
 
       const clone = () => JSON.parse(JSON.stringify(p));
-      const commit = np => setP(np);
+
+      // Czy dry-run jest AKTUALNY dla struktury, którą widać na ekranie.
+      // To zabezpieczenie, nie wygoda: bez tego można było kliknąć „Wykonaj w CM360”
+      // na planie policzonym dla INNEJ struktury — obejrzeć jeden plan, a zapisać coś
+      // innego. Dlatego każda zmiana drzewa unieważnia plan i wymusza ponowny dry-run.
+      const [planFresh, setPlanFresh] = useState(false);
+      // Wszystkie edycje struktury przechodzą przez `commit`, więc to jedyne miejsce,
+      // w którym trzeba unieważnić plan. Nowa operacja edycyjna dostaje to darmo.
+      const commit = np => { setP(np); setPlanFresh(false); };
 
       // JEDNO źródło prawdy o tym, że coś trwa. Każda operacja sieciowa przechodzi przez
       // `runBusy` albo raportuje przez `onBusy`, więc nie da się dodać nowej i zapomnieć
@@ -673,6 +681,7 @@
         setOrigLine(np && np.line ? { ...np.line } : null);
         setSiteStruct(null);
         setFoldersDirty(false);
+        setPlanFresh(false);       // inna struktura = poprzedni plan nic nie znaczy
         if (np && np.campaign && np.campaign.id && np.site) {
           fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(np.site.name)}`)
             .then(r => r.json()).then(setSiteStruct).catch(() => {});
@@ -687,6 +696,11 @@
       const [aiResult, setAiResult] = useState(null);   // diff operacji od agenta (b)
       const [assistRes, setAssistRes] = useState(null); // podpowiedzi agenta (a)
       const [commitRes, setCommitRes] = useState(null);
+
+      // Czy zapis ma być w ogóle POKAZANY. Zostaje widoczny (wyszarzony) także po zmianie
+      // struktury — użytkownik ma widzieć, że przycisk był i dlaczego przestał działać,
+      // a nie zgadywać, gdzie zniknął.
+      const planSeen = planFresh || !!(commitRes && commitRes.dryRun && commitRes.log);
 
       const questions = (p && p.questions) || [];
       const groupsQ = questions.find(q => q.id === 'groups');
@@ -717,6 +731,12 @@
 
       function setAnswer(id, val) {
         setAnswers(a => ({ ...a, [id]: val }));
+        // Odpowiedzi trafiają do /api/commit i sterują tym, co faktycznie idzie do
+        // zapisu (np. `groups` filtruje placementy przez isVisible), więc unieważniają
+        // plan tak samo jak edycja drzewa. Świadomie unieważniam przy KAŻDEJ odpowiedzi:
+        // najwyżej zrobisz dry-run, którego nie musiałeś — to tańsze niż zapis wykonany
+        // na planie policzonym dla innych odpowiedzi.
+        setPlanFresh(false);
         // Which folder feeds which landing page can only be applied by the server (it
         // redistributes the zip), so it is NOT rebuilt per click — the answer is just
         // recorded and `applyFolderAnswers` sends them all in one go.
@@ -916,14 +936,20 @@
             });
             const d = await r.json();
             setCommitRes(d);
+            // Udany dry-run zatwierdza plan DLA TEJ struktury — dopiero to odblokowuje
+            // realny zapis. Błąd nie zatwierdza niczego.
+            if (dryRun) setPlanFresh(!!d.log && !d.error);
             // a campaign created just now must stop being "new", otherwise a second
             // commit would try to create it all over again
             if (!dryRun && d.campaignId && !p.campaign.id) {
               const np = clone();
               np.campaign.id = d.campaignId;
               np.campaign.status = 'existing';
-              commit(np);
+              commit(np);          // to samo z siebie unieważnia plan
             }
+            // Po realnym zapisie plan jest zużyty: struktura jest już w CM360, więc
+            // powtórne kliknięcie „Wykonaj” zapisywałoby drugi raz. Wymuś nowy dry-run.
+            if (!dryRun) setPlanFresh(false);
           } catch (e) { setCommitRes({ error: String(e) }); }
         });
       }
@@ -947,7 +973,22 @@
                 <input type="file" accept="application/json" style={{ display: 'none' }} onChange={loadFile} /></label>
               <button className="btn" onClick={() => { loadProposal(null); setRemarks(''); setAiNote(''); }}>Wyczyść</button>
               <button className="btn" onClick={() => setShowJson(s => !s)}>{showJson ? 'Ukryj JSON' : 'Podgląd JSON'}</button>
-              <button className="btn primary" disabled={!p || !!pending} onClick={() => doCommit(true)}>Zatwierdź strukturę →</button>
+              {/* Zatwierdzenie jest nieklikalne, dopóki plan jest aktualny — nie ma czego
+                  sprawdzać drugi raz. Odblokowuje się samo, gdy zmienisz strukturę. */}
+              <button className="btn primary" disabled={!p || !!pending || planFresh}
+                title={planFresh ? 'Plan jest aktualny dla tej struktury — zmień coś, żeby sprawdzić ponownie'
+                                 : 'Dry-run: pokaże plan zapisu, nic nie zapisze'}
+                onClick={() => doCommit(true)}>Zatwierdź strukturę →</button>
+              {/* Zapis pojawia się dopiero po dry-runie i tylko dla planu policzonego
+                  dla struktury, którą widać teraz na ekranie. */}
+              {planSeen && (
+                <button className="btn primary" disabled={!planFresh || !!pending}
+                  style={!planFresh || pending ? undefined
+                    : { background: '#15803d', borderColor: '#15803d' }}
+                  title={planFresh ? 'Zapisze strukturę w CM360 i wygeneruje tagi'
+                                   : 'Struktura zmieniła się po ostatnim podglądzie — zatwierdź ją ponownie'}
+                  onClick={() => doCommit(false)}>Wykonaj w CM360 (zapis) →</button>
+              )}
             </div>
           </header>
 
@@ -1172,8 +1213,20 @@
                 </div>
               ))}
               {commitRes.tags && <div style={{ marginTop: 8 }}>🏷️ Tagi: <b>{commitRes.tags.count}</b> → <span className="hint">{commitRes.tags.file}</span></div>}
+              {commitRes.dryRun && commitRes.log && !planFresh && !commitRes.busy && (
+                <div style={{ marginTop: 10, padding: '8px 11px', borderRadius: 8,
+                              background: '#fdecea', color: '#8a1c12',
+                              border: '1px solid #f5c6c0', fontWeight: 600 }}>
+                  ⚠️ Struktura zmieniła się po tym podglądzie — ten plan jest nieaktualny.
+                  Kliknij „Zatwierdź strukturę”, żeby policzyć go od nowa.
+                </div>
+              )}
               {(commitRes.log || commitRes.error) && <div style={{ marginTop: 12 }}>
-                {commitRes.dryRun && commitRes.log && <button className="btn primary" onClick={() => doCommit(false)}>Wykonaj w CM360 (zapis) →</button>}
+                {commitRes.dryRun && commitRes.log &&
+                  <button className="btn primary" disabled={!planFresh || !!pending}
+                    title={planFresh ? 'Zapisze strukturę w CM360 i wygeneruje tagi'
+                                     : 'Plan jest nieaktualny — zatwierdź strukturę ponownie'}
+                    onClick={() => doCommit(false)}>Wykonaj w CM360 (zapis) →</button>}
                 <button className="btn" style={{ marginLeft: 8 }} onClick={() => setCommitRes(null)}>Zamknij</button>
               </div>}
             </div>}
