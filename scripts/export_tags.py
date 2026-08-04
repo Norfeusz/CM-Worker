@@ -8,7 +8,9 @@ a "Tracking Ads" workbook with the same columns as CG's Tags_* exports. A pair l
 Usage:
   py scripts/export_tags.py <campaignId> <creativeId> <adId>[,<adId>...] [out.xls]
 """
+import datetime
 import os
+import re
 import sys
 
 import xlwt
@@ -83,20 +85,135 @@ def collect_rows(svc, profile_id, campaign_id, pairs):
     return campaign, adv, rows
 
 
+# --- wygląd 1:1 z eksportem CM360 -------------------------------------------
+# Wartości odczytane z prawdziwego pliku wygenerowanego przez CM360
+# (Tags_Junior_2026_CG Indywidualny - Konta.xls), nie zgadnięte:
+#   * Arial 8pt w całym arkuszu (my mieliśmy 10pt)
+#   * nagłówki sekcji i tabeli na tle #99CCFF (paleta 44 = pale_blue), z ramkami
+#   * etykiety w bloku CONTRACT INFORMATION pogrubione
+#   * zawijanie tekstu w wierszach danych (tagi są długie)
+#   * blok nagłówkowy scalony: etykieta c1..c7, wartość c8..c12
+#   * zamrożony podział pod wierszem nagłówka, żeby nazwy kolumn zostały widoczne
+BASE = "font: name Arial, height 160;"                       # 160 = 8pt
+BORDER = "borders: left thin, right thin, top thin, bottom thin;"
+FILL = "pattern: pattern solid, fore_colour pale_blue;"
+
+SHEET_NAME = "Tracking Ads"
+NOTE_TITLE = "Trafficking Instructions/Notes"
+# CM360 wpisuje "1.0" w r1c8, ale scala CAŁY wiersz 1 (c1..c12) w jedną komórkę, więc
+# Excel pokazuje tylko "CONTRACT INFORMATION" — ta wersja jest w pliku NIEWIDOCZNA.
+# Odwzorowujemy to, co widać, i dlatego jej nie zapisujemy.
+# Kolumny, którym CM daje białe wypełnienie (reszta bez wypełnienia). Rozkład jest
+# nieregularny — tak to robi eksporter CM; na białym arkuszu nie widać różnicy, ale
+# trzymamy się pliku wzorcowego, żeby porównanie bajt-w-bajt nie rozjeżdżało się bez
+# powodu.
+WHITE_FILL_COLS = set(range(1, 11)) | {13, 15}
+# Boilerplate CM360 — zostaje dosłownie, bo to instrukcja dla wydawcy (cache-busting,
+# dc_rdid, obowiązek raportowania nielegalnych treści w EOG), a celem jest zgodność
+# z plikiem, który traffickerzy i wydawcy już znają.
+NOTE_BODY = (
+    "This workbook contains code required for implementing tracking ads. The code may "
+    "not be valid HTML and should be implemented as specified by your ad server. Please "
+    "see https://support.google.com/dcm/partner/answer/2837435 to learn more.\n\n"
+    "To ensure proper cache-busting, replace [timestamp] with a dynamically generated "
+    "random number. Learn more at "
+    "https://support.google.com/dcm/partner/answer/2837435.\n\n"
+    "When copying tags from this spreadsheet, be sure to click inside the cell and "
+    "highlight the text you want to copy. If you select and copy the entire cell, rather "
+    "than the text within it, some applications may put an extra set of quotation marks "
+    "(\"\") around the tags, causing them to function incorrectly when they're placed on "
+    "the publisher's webpage.\n\n"
+    "The publisher needs to insert device IDs into dc_rdid to enable in-app conversion "
+    "tracking. Learn more at "
+    "https://support.google.com/dcm/partner/answer/2826636#mobile.\n\n"
+    "The publisher can designate its playback method for each ad by using the dc_vpm "
+    "parameter. Learn more at https://support.google.com/dcm/answer/2826636#10.\n\n"
+    "In the European Economic Area (EEA), your ad must include a mechanism for users to "
+    "report illegal content and there may also be requirements to surface additional "
+    "transparency information about your ad. The publisher and/or buying platform must "
+    "notify Google of any illegal content reports using the appropriate form at "
+    "https://support.google.com/legal/troubleshooter/1114905#ts=2981967%2C2982031%2C12980091."
+)
+# Szerokości kolumn w jednostkach BIFF, skopiowane SUROWO z pliku CM360. Świadomie nie
+# liczymy ich jako znaki × 256: CM zapisuje wartości typu 2669 czy 3401, których tak nie
+# odtworzysz, a różnica jest widoczna przy porównaniu obu plików obok siebie.
+# Indeks 0 to wąska kolumna marginesu po lewej.
+COL_WIDTHS = [950, 2669, 3401, 3401, 3401, 3401, 5997, 3401, 5997, 3620, 2048, 2121,
+              2121, 2669, 6034, 2669, 6034, 11739, 11739, 11739, 11739, 11739]
+ROW_H_SECTION, ROW_H_NOTE, ROW_H_DATA, ROW_H_BLANK = 315, 2299, 867, 255
+DEFAULT_ROW_HEIGHT = 300
+FIRST_DATA_ROW = 11
+
+
+def _safe(part):
+    """Nazwa pliku: znaki zabronione w Windows na podkreślenie, bez zbitek."""
+    out = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", str(part or "")).strip(" ._")
+    return re.sub(r"_{2,}", "_", out) or "brak"
+
+
+def tags_filename(campaign, adv, when=None):
+    """Tags_kampania_advertiser_data.xls — schemat wymagany przez użytkownika.
+
+    Data jest w ISO (RRRR-MM-DD), żeby pliki z jednej kampanii sortowały się
+    chronologicznie i nie było wątpliwości dzień/miesiąc.
+    """
+    day = (when or datetime.date.today()).isoformat()
+    return f"Tags_{_safe(campaign.get('name'))}_{_safe(adv.get('name'))}_{day}.xls"
+
+
 def write_xls(campaign, adv, rows, path):
     wb = xlwt.Workbook(encoding="utf-8")
-    sh = wb.add_sheet("Tracking Ads")
-    bold = xlwt.easyxf("font: bold on")
-    sh.write(1, 1, "CONTRACT INFORMATION", bold)
-    sh.write(2, 1, "Advertiser ID"); sh.write(2, 8, adv["id"])
-    sh.write(3, 1, "Advertiser Name"); sh.write(3, 8, adv["name"])
-    sh.write(4, 1, "Campaign ID"); sh.write(4, 8, campaign["id"])
-    sh.write(5, 1, "Campaign Name"); sh.write(5, 8, campaign["name"])
-    for c, h in enumerate(HEADERS):
-        sh.write(10, c + 1, h, bold)
+    sh = wb.add_sheet(SHEET_NAME)
+
+    st_section = xlwt.easyxf(f"{BASE} font: bold on, colour black; {FILL} {BORDER}")
+    st_label = xlwt.easyxf(f"{BASE} font: bold on; {BORDER}")
+    st_value = xlwt.easyxf(f"{BASE} {BORDER}")
+    st_note = xlwt.easyxf(f"{BASE} {BORDER} alignment: wrap on, vert top, horiz left;")
+    st_header = xlwt.easyxf(f"{BASE} font: bold on; {FILL} {BORDER}")
+    wrap = "alignment: wrap on, vert top, horiz left;"
+    st_data = xlwt.easyxf(f"{BASE} {BORDER} {wrap}")
+    st_data_white = xlwt.easyxf(
+        f"{BASE} {BORDER} {wrap} pattern: pattern solid, fore_colour white;")
+
+    for c, w in enumerate(COL_WIDTHS):
+        sh.col(c).width = w
+    sh.row_default_height = DEFAULT_ROW_HEIGHT
+
+    def h(row, height):
+        sh.row(row).height_mismatch = True
+        sh.row(row).height = height
+
+    h(1, ROW_H_SECTION)
+    sh.write_merge(1, 1, 1, 12, "CONTRACT INFORMATION", st_section)
+    for i, (label, value) in enumerate([
+            ("Advertiser ID", adv["id"]), ("Advertiser Name", adv["name"]),
+            ("Campaign ID", campaign["id"]), ("Campaign Name", campaign["name"])]):
+        h(2 + i, ROW_H_SECTION)
+        sh.write_merge(2 + i, 2 + i, 1, 7, label, st_label)
+        sh.write_merge(2 + i, 2 + i, 8, 12, value, st_value)
+
+    h(6, ROW_H_BLANK)                       # CM ustawia wysokość także pustym wierszom
+    h(9, ROW_H_BLANK)
+    h(7, ROW_H_SECTION)
+    sh.write_merge(7, 7, 1, 12, NOTE_TITLE, st_section)
+    h(8, ROW_H_NOTE)
+    sh.write_merge(8, 8, 1, 12, NOTE_BODY, st_note)
+
+    h(10, ROW_H_SECTION)
+    for c, head in enumerate(HEADERS):
+        sh.write(10, c + 1, head, st_header)
     for i, row in enumerate(rows):
+        h(FIRST_DATA_ROW + i, ROW_H_DATA)
         for c, val in enumerate(row):
-            sh.write(11 + i, c + 1, val)
+            col = c + 1
+            sh.write(FIRST_DATA_ROW + i, col, val,
+                     st_data_white if col in WHITE_FILL_COLS else st_data)
+
+    # nazwy kolumn zostają widoczne przy przewijaniu — przy 100+ tagach to różnica
+    # między czytelnym arkuszem a zgadywaniem, która kolumna to który tag
+    sh.set_panes_frozen(True)
+    sh.set_horz_split_pos(FIRST_DATA_ROW)
+    sh.set_remove_splits(True)
     wb.save(path)
     return path
 
@@ -105,11 +222,11 @@ if __name__ == "__main__":
     if len(sys.argv) < 4:
         print(__doc__); sys.exit(1)
     cid, creative_id, ad_ids = sys.argv[1], sys.argv[2], sys.argv[3].split(",")
-    out = sys.argv[4] if len(sys.argv) > 4 else os.path.join(
-        os.path.dirname(__file__), "..", "data", f"Tags_delta_{cid}.xls")
     svc = service(read_only=False)  # generatetags is a POST
     pairs = [(aid, creative_id) for aid in ad_ids]
     campaign, adv, rows = collect_rows(svc, "9556074", cid, pairs)
+    out = sys.argv[4] if len(sys.argv) > 4 else os.path.join(
+        os.path.dirname(__file__), "..", "data", tags_filename(campaign, adv))
     write_xls(campaign, adv, rows, out)
     print(f"wrote {len(rows)} tag row(s) -> {out}")
     for r in rows:
