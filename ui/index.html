@@ -117,12 +117,17 @@
 
     const Badge = ({ s }) => <span className={"badge " + s}>{s === 'new' ? 'nowe' : 'istnieje'}</span>;
 
-    function QuestionsPanel({ questions, answers, onAnswer }) {
+    function QuestionsPanel({ questions, answers, onAnswer, onApply, pending, busy }) {
       if (!questions.length) return null;
       const toggle = (id, val) => {
         const cur = answers[id] || [];
         onAnswer(id, cur.includes(val) ? cur.filter(x => x !== val) : [...cur, val]);
       };
+      // Questions marked `rebuild` cannot be applied in the browser — the server has to
+      // redistribute the zip across landing pages. Answer them all first and rebuild
+      // ONCE: a zip split by format can raise half a dozen of these, and rebuilding per
+      // click made the panel unusable.
+      const toApply = questions.filter(q => q.rebuild);
       return (
         <div className="qcard">
           <div className="lead">❓ Do rozstrzygnięcia ({questions.length}) — odpowiedzi sterują drzewem poniżej</div>
@@ -148,27 +153,55 @@
               )}
             </div>
           ))}
+          {toApply.length > 0 && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn primary" disabled={busy} onClick={onApply}>
+                {busy ? 'Przebudowuję…' : `Zatwierdź przypisania (${toApply.length}) →`}</button>
+              <span className="hint">
+                {pending
+                  ? '⚠️ Zmiany nie są jeszcze w drzewie poniżej — kliknij, żeby je zastosować.'
+                  : 'Drzewo poniżej pokazuje domyślne przypisania. Zatwierdzenie przebuduje je raz, dla wszystkich odpowiedzi naraz.'}
+              </span>
+            </div>
+          )}
         </div>
       );
     }
 
-    function LinesPanel({ line, source, existing }) {
-      const reused = !!line.reusedLine;
-      const curNo = line.number;
-      const hasCurInExisting = existing.some(l => l.number === curNo);
+    function LinesPanel({ lines, source, existing, folders }) {
+      // an order can carry SEVERAL landing pages; they may share a line number (same
+      // page, different utm) or be separate lines
+      const curNos = [...new Set(lines.map(l => l.number))];
+      const usedNos = [...new Set(lines.filter(l => l.reusedLine).map(l => l.number))];
+      const folderOf = idx => Object.keys((folders && folders.map) || {})
+        .filter(f => folders.map[f] === idx);
       return (
         <div className="card">
           <div className="lines-title">🔗 Linie w kampanii</div>
 
           <div className="curbox">
             <div className="lead">
-              {reused
-                ? `✅ Używamy istniejącej linii ${curNo}`
-                : `➕ Dodajemy nową linię ${curNo}`}
+              {lines.length > 1
+                ? `🔗 ${lines.length} strony docelowe w tym zleceniu `
+                  + `(${curNos.length === 1 ? 'linia ' + curNos[0] : 'linie ' + curNos.join(', ')})`
+                : (lines[0].reusedLine
+                  ? `✅ Używamy istniejącej linii ${curNos[0]}`
+                  : `➕ Dodajemy nową linię ${curNos[0]}`)}
             </div>
-            <div>Creative: <b>{line.creativeName}</b> · Landing page: <b>{line.lpName}</b>
-              <span className="hint"> · źródło {source} · ścieżka {line.path}</span></div>
-            {line.url && <div style={{ marginTop: 4 }}><a className="url" href={line.url} target="_blank">{line.url}</a></div>}
+            {lines.map((line, i) => {
+              const fs = folderOf(i);
+              return (
+                <div key={i} style={{ marginTop: i ? 8 : 0 }}>
+                  <div>Creative: <b>{line.creativeName}</b> · Landing page: <b>{line.lpName}</b>
+                    <span className="hint"> · linia {line.number} · źródło {source}
+                      {lines.length === 1 ? ' · ścieżka ' + line.path : ''}</span></div>
+                  {line.url && <div><a className="url" href={line.url} target="_blank">{line.url}</a></div>}
+                  {lines.length > 1 && <div className="hint">
+                    {fs.length ? `materiały z folderu: ${fs.join(', ')}` : 'materiały: wszystkie z paczki'}
+                  </div>}
+                </div>
+              );
+            })}
           </div>
 
           <div className="hint" style={{ marginBottom: 6 }}>
@@ -176,7 +209,7 @@
           </div>
 
           {existing.map(l => {
-            const used = reused && l.number === curNo;
+            const used = usedNos.includes(l.number);
             return (
               <div className={"line-grp" + (used ? " used" : "")} key={l.number}>
                 <div className="line-hdr">
@@ -193,14 +226,17 @@
             );
           })}
 
-          {!reused && !hasCurInExisting &&
-            <div className="line-grp used">
-              <div className="line-hdr">linia{curNo} <span className="tag-use">← dodajemy (nowa)</span></div>
-              <div className="variant">
-                <span className="vname">{line.lpName}</span>
-                <a className="url" href={line.url} target="_blank">{line.url || '(adres z bieżącego linku)'}</a>
-              </div>
-            </div>}
+          {curNos.filter(n => !existing.some(l => l.number === n)).map(n => (
+            <div className="line-grp used" key={n}>
+              <div className="line-hdr">linia{n} <span className="tag-use">← dodajemy (nowa)</span></div>
+              {lines.filter(l => l.number === n).map((l, i) => (
+                <div className="variant" key={i}>
+                  <span className="vname">{l.lpName}</span>
+                  <a className="url" href={l.url} target="_blank">{l.url || '(adres z bieżącego linku)'}</a>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       );
     }
@@ -290,7 +326,10 @@
     }
 
     function InputPanel({ onResult, rebuildRef, onCanRebuild }) {
-      const [link, setLink] = useState('');
+      // one address per line: several LPs can belong to one order (all in the same
+      // campaign), e.g. the same creatives tagged for prospecting and remarketing
+      const [linkText, setLinkText] = useState('');
+      const links = linkText.split('\n').map(s => s.trim()).filter(Boolean);
       const [source, setSource] = useState('GDN');
       const [message, setMessage] = useState('');
       const [file, setFile] = useState(null);
@@ -338,8 +377,8 @@
       const runAnalyze = async (extra) => {
         // Nazwij BRAKUJĄCY element wprost — "podaj link i wybierz plik" nie mówi, którego
         // z dwóch brakuje, a szary hint obok przycisku łatwo przeoczyć.
-        if (!link && !file) return fail('Nie podałeś adresu LP ani nie wybrałeś pliku .zip');
-        if (!link) return fail('Nie podałeś adresu LP');
+        if (!links.length && !file) return fail('Nie podałeś adresu LP ani nie wybrałeś pliku .zip');
+        if (!links.length) return fail('Nie podałeś adresu LP');
         if (!file) return fail('Nie wybrałeś pliku .zip');
         setBusy(true); setNote(''); setNoteErr(false); setSuggestData(null);
         try {
@@ -349,7 +388,7 @@
           });
           const resp = await fetch('/api/build-proposal', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ link, source, message, zipB64: b64, zipName: file.name, ...(extra || {}) }),
+            body: JSON.stringify({ links, source, message, zipB64: b64, zipName: file.name, ...(extra || {}) }),
           });
           const data = await resp.json();
           if (data.error) fail(data.error);
@@ -362,14 +401,20 @@
       // expose the analysis to the campaign card above, so swapping the campaign can
       // rebuild the structure with the SAME link/zip/source/message (no re-entry)
       useEffect(() => { if (rebuildRef) rebuildRef.current = runAnalyze; });
-      useEffect(() => { if (onCanRebuild) onCanRebuild(!!(link && file)); }, [!!link, !!file]);
+      useEffect(() => { if (onCanRebuild) onCanRebuild(!!(links.length && file)); }, [links.length, !!file]);
       return (
         <div className="card">
           <div className="lines-title">📝 Nowe zlecenie</div>
           <div className="form">
-            <label>Adres LP
-              <input type="text" value={link} onChange={e => setLink(e.target.value)}
-                placeholder="https://www.mbank.pl/lp2/2026/c1/..." /></label>
+            <label>Adresy LP <span className="hint">— jeden na linię; wszystkie trafią do tej samej kampanii</span>
+              <textarea rows={Math.min(6, Math.max(2, links.length + 1))} value={linkText}
+                onChange={e => setLinkText(e.target.value)}
+                placeholder={"https://www.mbank.pl/lp2/2026/c1/...?utm_medium=prospecting\n"
+                  + "https://www.mbank.pl/lp2/2026/c1/...?utm_medium=remarketing"} /></label>
+            {links.length > 1 && <div className="hint">
+              {links.length} adresy — narzędzie samo spróbuje przypisać foldery z zipa do
+              poszczególnych stron; materiały bez pasującego folderu trafią pod każdą z nich.
+            </div>}
             <label>Źródło
               <select value={source} onChange={e => setSource(e.target.value)}>
                 {['GDN', 'Meta', 'Facebook', 'DemGen', 'Programmatic', 'Mailing'].map(s => <option key={s}>{s}</option>)}
@@ -507,7 +552,7 @@
       );
     }
 
-    function CreativeRow({ cr, lineLp, onRename, onDelete, onSetLP, onClearLP, onApplyToAll }) {
+    function CreativeRow({ cr, lineLp, orderLps, onRename, onDelete, onSetLP, onClearLP, onApplyToAll }) {
       const [editing, setEditing] = useState(false);
       const [lpN, setLpN] = useState('');
       const [lpU, setLpU] = useState('');
@@ -515,6 +560,9 @@
                                             // "Zastosuj do wszystkich" detect a rename vs a plain add
       const effName = cr.lpName || lineLp.lpName;
       const effUrl = cr.lpName ? (cr.lpUrl || '') : (lineLp.url || '');
+      // with several LPs in the order every creative carries an explicit lpName, so
+      // "own LP" must mean "hand-typed", not "one of the order's pages"
+      const ofOrder = !cr.lpName || (orderLps || []).some(l => l.lpName === cr.lpName);
       const startEdit = () => { setLpN(effName); setLpU(effUrl); setEditing(true); };
       return (
         <div className="cre-wrap">
@@ -532,7 +580,7 @@
           <div className="cre-lp">
             {!editing && (
               <span className="hint">
-                LP: <b>{effName}</b> {cr.lpName ? '(własny)' : '(linia)'}
+                LP: <b>{effName}</b> {ofOrder ? '(linia)' : '(własny)'}
                 {' · '}<button className="btn link mini" onClick={startEdit}>
                   {cr.lpName ? 'edytuj' : 'ustaw własny LP'}</button>
                 {cr.lpName && <button className="btn link mini" onClick={onClearLP}>usuń własny (użyj LP linii)</button>}
@@ -565,13 +613,15 @@
       const rebuildRef = useRef(null);          // InputPanel's runAnalyze (same link/zip)
       const [canRebuild, setCanRebuild] = useState(false);
       const [changeCamp, setChangeCamp] = useState(false);
-      const rebuildOn = extra => { setChangeCamp(false); setCommitRes(null); rebuildRef.current(extra); };
+      // returns InputPanel's runAnalyze promise so callers can show their own progress
+      const rebuildOn = extra => { setChangeCamp(false); setCommitRes(null); return rebuildRef.current(extra); };
       const [siteStruct, setSiteStruct] = useState(null);  // existing {placements:[{name,ads:[{name,creatives}]}]}
       function loadProposal(np) {
         setP(np);
         setAnswers(defaultsFor(np));
         setOrigLine(np && np.line ? { ...np.line } : null);
         setSiteStruct(null);
+        setFoldersDirty(false);
         if (np && np.campaign && np.campaign.id && np.site) {
           fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(np.site.name)}`)
             .then(r => r.json()).then(setSiteStruct).catch(() => {});
@@ -594,8 +644,32 @@
 
       // line_conflict is a REAL one-time rename (not a render override), so it plays
       // nicely with freely-edited/multiple creatives per ad added afterwards.
+      // keep the chosen campaign when a rebuild is triggered for another reason
+      const campaignExtra = () => (p && p.campaign
+        ? (p.campaign.status === 'new' ? { newCampaign: p.campaign.name }
+                                       : { campaignId: p.campaign.id })
+        : {});
+
+      // folder -> landing page answers waiting to be sent (see setAnswer)
+      const [foldersDirty, setFoldersDirty] = useState(false);
+      const [applying, setApplying] = useState(false);
+      const applyFolderAnswers = () => {
+        if (!canRebuild) return;
+        const chosen = { ...((p && p.lpFolders && p.lpFolders.override) || {}) };
+        Object.keys(answers).forEach(k => {
+          if (k.startsWith('lp_folder:')) chosen[k.slice(10)] = answers[k];
+        });
+        setFoldersDirty(false); setApplying(true);
+        Promise.resolve(rebuildOn({ ...campaignExtra(), folderMap: chosen }))
+          .finally(() => setApplying(false));
+      };
+
       function setAnswer(id, val) {
         setAnswers(a => ({ ...a, [id]: val }));
+        // Which folder feeds which landing page can only be applied by the server (it
+        // redistributes the zip), so it is NOT rebuilt per click — the answer is just
+        // recorded and `applyFolderAnswers` sends them all in one go.
+        if (id.startsWith('lp_folder:')) { setFoldersDirty(true); return; }
         if (id !== 'line_conflict' || !p || !origLine) return;
         const lcQ2 = questions.find(q => q.id === 'line_conflict');
         const reuseLine = lcQ2 && lcQ2.detail && lcQ2.detail.reuseLine;
@@ -745,6 +819,28 @@
         } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
       }
 
+      // Accepting role (a)'s suggestions goes through the SAME apply_ops path as remarks
+      // (the server translates them into ops), so there is one diff to review and no
+      // second, untested way of changing the tree.
+      const [aiBusy, setAiBusy] = useState(false);
+      async function applySuggestions() {
+        setAiBusy(true); setAiNote('Stosuję sugestie Agenta…');
+        try {
+          const resp = await fetch('/api/apply-suggestions', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proposal: p, suggestions: assistRes }),
+          });
+          const d = await resp.json();
+          if (d.error) { setAiNote('Błąd: ' + d.error); setAiBusy(false); return; }
+          setAiResult(d);
+          if (d.proposal) loadProposal(d.proposal);
+          setAssistRes(null);
+          setAiNote(`Zastosowano ${d.applied} zmian`
+            + (d.skipped ? `, pominięto ${d.skipped}` : '') + ' ✓');
+        } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        setAiBusy(false);
+      }
+
       async function doCommit(dryRun) {
         setCommitRes({ busy: true, dryRun });
         try {
@@ -807,8 +903,10 @@
               </div>}
             </div>
 
-            <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer} />
-            <LinesPanel line={p.line} source={p.source} existing={p.existingLines || []} />
+            <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer}
+              onApply={applyFolderAnswers} pending={foldersDirty} busy={applying} />
+            <LinesPanel lines={p.lines || [p.line]} source={p.source}
+              existing={p.existingLines || []} folders={p.lpFolders} />
 
             <div className="card">
               <div className="toolbar" style={{ marginBottom: 12 }}>
@@ -867,8 +965,15 @@
                     </div>
                   ))}
                   {assistRes.notes && <div className="hint" style={{ marginTop: 6 }}>{assistRes.notes}</div>}
-                  <div style={{ marginTop: 8 }}>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button className="btn primary" disabled={aiBusy}
+                      onClick={applySuggestions}>
+                      {aiBusy ? 'Stosuję…' : '✓ Zastosuj sugestie'}</button>
                     <button className="btn mini" onClick={() => setAssistRes(null)}>Zamknij</button>
+                    <span className="hint">
+                      Zastosuje nazwy linii i landing page. Nazwy adów i mapowania folderów
+                      zostaną pominięte — powie o tym raport poniżej.
+                    </span>
                   </div>
                 </div>
               )}
@@ -898,7 +1003,12 @@
                     <div className="hint">Agent nie był pewien i pyta — nie zgadywał:</div>
                     {aiResult.unclear.map((q, i) => <div key={i}>❓ {q}</div>)}
                   </div>}
-                  {aiResult.notes && <div className="hint" style={{ marginTop: 6 }}>{aiResult.notes}</div>}
+                  {/* role (b) sends one string, apply-suggestions sends a list of what
+                      it deliberately did not translate — render both readably */}
+                  {Array.isArray(aiResult.notes)
+                    ? aiResult.notes.map((n, i) => (
+                        <div className="hint" key={i} style={{ marginTop: 4 }}>ℹ️ {n}</div>))
+                    : aiResult.notes && <div className="hint" style={{ marginTop: 6 }}>{aiResult.notes}</div>}
                   <div style={{ marginTop: 8 }}>
                     <button className="btn mini" onClick={() => setAiResult(null)}>Zamknij</button>
                   </div>
@@ -942,7 +1052,7 @@
                           </div>
                           <div className="cre-list">
                             {a.creatives.map((cr, ci) => (
-                              <CreativeRow key={ci} cr={cr} lineLp={p.line}
+                              <CreativeRow key={ci} cr={cr} lineLp={p.line} orderLps={p.lines || [p.line]}
                                 onRename={v => renameCre(pi, ai, ci, v)}
                                 onDelete={() => delCreative(pi, ai, ci)}
                                 onSetLP={(n, u) => setCreativeLP(pi, ai, ci, n, u)}

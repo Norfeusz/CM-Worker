@@ -2,7 +2,8 @@
 
   GET  /                     -> ui/index.html
   GET  /<file>               -> static file from ui/
-  POST /api/build-proposal   -> {link, source, message, zipB64|zipPath} -> proposal JSON
+  POST /api/build-proposal   -> {link|links[], source, message, zipB64|zipPath,
+                                 folderMap?} -> proposal JSON
 
 Run:  py scripts/serve.py   (then open http://127.0.0.1:8765/)
 Read-only against the TEST advertiser (cm_auth guard still applies).
@@ -66,25 +67,86 @@ CTYPE = {".html": "text/html; charset=utf-8", ".js": "application/javascript; ch
          ".css": "text/css", ".json": "application/json"}
 
 
-def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None):
+def _lp_folder_candidates(parsed):
+    """Top-level zip folders that could denote a landing page. Both parse_zip buckets
+    count: `remarketing/` is a GROUP_KEYWORD so it lands in `groups`, `prospecting/`
+    is not so it lands in `variants` — for LP matching the distinction is meaningless."""
+    names = [g["name"] for g in parsed.get("groups") or []]
+    return names + [v for v in parsed.get("variants") or [] if v and v not in names]
+
+
+def _match_lp_folders(links, anchor, parsed, override=None):
+    """Deterministic folder -> landing page matching, with the user's answers on top.
+
+    Returns (folder_match, labels) where labels feeds resolve_lines: a folder name is
+    the fallback label for a landing page whose URL carries no readable discriminator.
+    """
+    discs = M.lp_discriminators(links, anchor)
+    fm = M.match_folders_to_lps(_lp_folder_candidates(parsed), discs)
+    # Only folders the AUTOMATIC pass recognised by name stop being placement
+    # discriminators — those are landing-page folders and nothing else. A user answer
+    # says which page a folder feeds; it does NOT stop `screening/` from being a format
+    # folder of its own, so it must not consume it.
+    fm["consumed"] = sorted(fm.get("map") or {})
+    if override:
+        fm = dict(fm, map=dict(fm.get("map") or {}),
+                  ambiguous=[a for a in fm.get("ambiguous") or []
+                             if a["folder"] not in override],
+                  unmatched=[f for f in fm.get("unmatched") or []
+                             if f not in override],
+                  # echoed back so the UI keeps no hidden state of its own: answering a
+                  # second folder resends the first answer along with it
+                  override=dict(override))
+        for folder, val in override.items():
+            if str(val).isdigit():
+                fm["map"][folder] = int(val)
+            else:
+                fm["map"].pop(folder, None)          # "all" -> feeds every line
+    labels = {}
+    for folder, idx in (fm.get("map") or {}).items():
+        labels.setdefault(idx, folder)
+    return fm, labels
+
+
+def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None,
+                   links=None, folder_map=None):
+    """Build the editable proposal for one order.
+
+    `links` carries SEVERAL landing pages that all belong to the same campaign; `link`
+    is the single-link shorthand and stays the primary one. Every link must resolve to
+    the same advertiser — a mixed order is a mistake worth refusing rather than
+    trafficking half of.
+    """
     rules = json.load(open(MAP_PATH, encoding="utf-8"))["rules"]
-    rule = M.resolve_advertiser(link, rules)
-    if not rule:
+    links = [l.strip() for l in (links or [link]) if l and l.strip()]
+    if not links:
+        return {"error": "Podaj co najmniej jeden link do strony docelowej."}
+    link = links[0]
+    resolved = [(l, M.resolve_advertiser(l, rules)) for l in links]
+    if not resolved[0][1]:
         return {"error": "Żadna reguła nie dopasowała advertisera (tu wejdzie fallback AI)."}
+    rule = resolved[0][1]
+    bad = [l for l, r in resolved if not r or r.get("advertiserId") != rule.get("advertiserId")]
+    if bad:
+        return {"error": "Linki wskazują różnych advertiserów — jedno zlecenie musi "
+                         f"dotyczyć jednego. Nie pasuje do „{rule.get('advertiser')}”: "
+                         + ", ".join(bad)}
     anchor = rule.get("anchor", [])
     svc = service(read_only=True)
+    parsed = parse_zip.parse(zip_path)
+    folder_match, labels = _match_lp_folders(links, anchor, parsed, folder_map)
 
     if new_campaign:
-        # brand-new campaign: no campaign LPs yet, so this link is always line 1 and
-        # every placement/ad/creative below is new. Account-level sites still exist,
+        # brand-new campaign: no campaign LPs yet, so these links are the first lines
+        # and every placement/ad/creative below is new. Account-level sites still exist,
         # so pass them as an empty-placement tree to keep the Site badge honest.
         state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER)
-        parsed = parse_zip.parse(zip_path)
         prop = B.build_proposal(source, parsed,
                                 {"id": None, "name": new_campaign, "status": "new"},
-                                M.resolve_line(link, anchor, source, []),
+                                lines=M.resolve_lines(links, anchor, source, [], labels),
                                 existing={s: {} for s in state["sites_by_name"]},
-                                campaign_lps=[], target_url=link)
+                                campaign_lps=[], target_url=link,
+                                folder_match=folder_match)
         return _attach_ai(prop, parsed, message, rules)
 
     camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
@@ -92,24 +154,33 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
         # explicit override (user manually picked a campaign from the browse list)
         cid = campaign_id
     else:
-        ranked, suggest_new = M.match_campaigns(link, anchor, camp_lps)
-        if suggest_new:
+        # all links share one campaign; the first that matches an existing one decides,
+        # so a brand-new path next to a known one doesn't force a new campaign
+        ranked_first, cid = [], None
+        for l in links:
+            ranked, suggest_new = M.match_campaigns(l, anchor, camp_lps)
+            ranked_first = ranked_first or ranked
+            if not suggest_new:
+                cid = ranked[0]["campaignId"]
+                break
+        if not cid:
             return {"suggestNewCampaign": True, "advertiser": rule.get("advertiser"),
                     "message": "Brak kampanii z pasującą ścieżką — zasugerowano utworzenie nowej.",
                     "pathHint": "/".join(M.remaining_path(link, anchor) or []),
-                    "candidates": ranked[:5]}
-        cid = ranked[0]["campaignId"]
+                    "candidates": ranked_first[:5]}
 
     this = [l for l in camp_lps if l["campaignId"] == cid]
-    line = M.resolve_line(link, anchor, source, this)
-    conflict = M.detect_line_conflict(link, anchor, source, this)
-    parsed = parse_zip.parse(zip_path)
+    lines = M.resolve_lines(links, anchor, source, this, labels)
+    # the reuse-vs-new-line question is per landing page; report the first one that hits
+    conflict = next((c for c in (M.detect_line_conflict(l, anchor, source, this)
+                                 for l in links) if c["conflict"]), {"conflict": False})
     campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
     state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
     prop = B.build_proposal(source, parsed,
                             {"id": cid, "name": campaign["name"], "status": "existing"},
-                            line, existing=existing_tree(state), campaign_lps=this,
-                            target_url=link, line_conflict=conflict)
+                            lines=lines, existing=existing_tree(state), campaign_lps=this,
+                            target_url=link, line_conflict=conflict,
+                            folder_match=folder_match)
     return _attach_ai(prop, parsed, message, rules)
 
 
@@ -207,6 +278,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(self._refine(req), ensure_ascii=False))
             if route == "/api/assist":
                 return self._send(200, json.dumps(self._assist(req), ensure_ascii=False))
+            if route == "/api/apply-suggestions":
+                return self._send(200, json.dumps(self._apply_suggestions(req),
+                                                  ensure_ascii=False))
             if route == "/api/commit":
                 return self._send(200, json.dumps(self._commit(req), ensure_ascii=False))
             if route == "/api/create-site":
@@ -222,11 +296,13 @@ class Handler(BaseHTTPRequestHandler):
             with open(tmp, "wb") as f:
                 f.write(base64.b64decode(req["zipB64"].split(",")[-1]))
             zip_path = tmp
-        if not req.get("link") or not zip_path or not req.get("source"):
-            return {"error": "wymagane: link, zip, source"}
-        return build_proposal(req["link"], zip_path, req["source"], req.get("message", ""),
+        links = req.get("links") or ([req["link"]] if req.get("link") else [])
+        if not links or not zip_path or not req.get("source"):
+            return {"error": "wymagane: link(i), zip, source"}
+        return build_proposal(links[0], zip_path, req["source"], req.get("message", ""),
                               campaign_id=req.get("campaignId"),
-                              new_campaign=req.get("newCampaign"))
+                              new_campaign=req.get("newCampaign"),
+                              links=links, folder_map=req.get("folderMap"))
 
     def _create_site(self, req):
         """Add a Site to the account. dryRun=True -> plan only (still resolves the
@@ -333,6 +409,22 @@ class Handler(BaseHTTPRequestHandler):
                 "unclear": result.get("unclear") or [],
                 "confidence": result.get("confidence"),
                 "notes": result.get("notes") or ""}
+
+    def _apply_suggestions(self, req):
+        """Accept role (a)'s suggestions. They are translated into role (b)'s ops and
+        applied by the same `apply_ops`, so the user reviews one diff and nothing is
+        applied by a second, untested path. `notes` says what was NOT translated."""
+        proposal = req.get("proposal") or {}
+        suggestions = req.get("suggestions") or {}
+        if not proposal.get("placements"):
+            return {"error": "Brak struktury do poprawienia."}
+        if not suggestions:
+            return {"error": "Brak sugestii do zastosowania — najpierw poproś agenta (a)."}
+        new_proposal, log, notes = AG.apply_suggestions(proposal, suggestions)
+        new_proposal["tags"] = B.compute_tags(new_proposal)
+        applied = [e for e in log if e["ok"]]
+        return {"proposal": new_proposal, "log": log, "applied": len(applied),
+                "skipped": len(log) - len(applied), "notes": notes}
 
     def _assist(self, req):
         """Agent (a): help build the structure at the low-confidence points.
