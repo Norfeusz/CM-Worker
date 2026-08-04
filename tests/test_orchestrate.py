@@ -152,5 +152,55 @@ check("nowa kampania: everything below it is CREATE (site istnieje -> REUSE)",
       {"site": "REUSE", "creative": "CREATE", "placement": "CREATE"})
 check("orkiestrator przyjął id nowej kampanii", orch4.cid, "(new)")
 
+print("\nWIELE LP W JEDNYM ZLECENIU: dwa linki do tej samej kampanii, zip podzielony na\n"
+      "foldery prospecting/ i remarketing/ — cała ścieżka zapisu bez zmian:")
+import matcher as M
+
+KONTA = ["indywidualny", "konta"]
+LPBASE = "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/mkonto/"
+P_URL, R_URL = LPBASE + "?utm_medium=prospecting", LPBASE + "?utm_medium=remarketing"
+lines_multi = M.resolve_lines([P_URL, R_URL], KONTA, "GDN", [])
+fm_multi = M.match_folders_to_lps(["prospecting", "remarketing"],
+                                  M.lp_discriminators([P_URL, R_URL], KONTA))
+parsed_multi = {
+    "format_hint": "Display", "warnings": [],
+    "groups": [{"name": "remarketing", "source_hint": None, "n_entries": 1}],
+    "units": [
+        {"dimension": "300x250", "variant": "prospecting", "card_index": None,
+         "type": "image", "packaged": False, "source_path": "prospecting/300x250",
+         "group": None},
+        {"dimension": "300x250", "variant": "remarketing", "card_index": None,
+         "type": "image", "packaged": False, "source_path": "remarketing/300x250",
+         "group": "remarketing"},
+    ],
+}
+proposal5 = B.build_proposal("GDN", parsed_multi, camp, lines=lines_multi,
+                             folder_match=fm_multi)
+state5 = {"sites_by_name": {"CG_GDN": "SITE1"}, "placements": {}, "ads": {},
+          "ad_creatives": {}, "creatives_by_name": {},
+          "lps_by_name": {}, "adv_lp_by_name_url": {}}
+orch5 = Orchestrator(svc=None, profile_id="P", advertiser_id="A", campaign=dict(camp),
+                     dry_run=True)
+log5 = orch5.run(proposal5, state5)
+
+print()
+lp5 = [e["name"] for e in log5 if e["kind"] == "landingPage"]
+check("dokładnie DWA LP — żadnego osieroconego LP „linii” obok nich",
+      sorted(lp5), ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+check("drugie LP zarejestrowane na liście stron docelowych kampanii",
+      [e["name"] for e in log5 if e["kind"] == "campaign-LP"],
+      ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+check("dwa creative, po jednym na LP",
+      sorted(e["name"] for e in log5 if e["kind"] == "creative"),
+      ["linia1-prospecting", "linia1-remarketing"])
+ad5 = [e for e in log5 if e["kind"] == "ad"]
+check("jeden ad 300x250: CREATE + append drugiego creative",
+      [(e["name"], e["action"]) for e in ad5],
+      [("300x250", "CREATE"), ("300x250", "UPDATE")])
+check("każdy creative wskazuje SWOJE LP",
+      [("prospecting" in e["detail"], "remarketing" in e["detail"]) for e in ad5],
+      [(True, False), (False, True)])
+check("2 tagi = 1 ad × 2 LP", len(proposal5["tags"]), 2)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

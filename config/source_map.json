@@ -1,8 +1,10 @@
 {
   "_comment": "source (UI choice) -> CM360 Site + placement naming convention. adKey decides how an Ad is named from a parsed zip unit. Extensible; refine with training pairs. Facebook/DemGen conventions are first-guess.",
+  "_fileFormats": "Optional per-source block deciding what the FILE FORMAT of a delivery (GIF/PNG/JPG/HTML) does to the structure. mode: 'ignore' = format plays no part (ads named by dimension alone); 'adSuffix' = one placement, ad named {dimension}_{format} (160x600_gif); 'placement' = one placement per format, named via `placements`, each holding only the dimensions from its own folder. `aliases` folds interchangeable names together. The format is read from the WORDS of the top-level folder ('SPÓŁKA JPG', 'HTML FRC') because PNG and JPG both parse as asset type 'image' and cannot be told apart from the type alone.",
   "_verified": "2026-07-29, konto testowe (profil 9556074): każdy Site z tej mapy istnieje na koncie — CG_GDN=4982174, CG_Facebook=5009061, CG_Demand_Gen=10795500, CG_Programmatic=7477644, mailsales.pl=2836807. Nazwy Site NIE muszą pokrywać się z nazwą wpisu Site Directory (CG_GDN wisi na wpisie 'CG_remarketing' 3410897) — przy dodawaniu nowego Site wskazuj wpis katalogu ręcznie.",
   "sources": {
-    "GDN":         { "site": "CG_GDN",          "placementByFormat": { "Display": "Display", "Video": "Video" },                          "adKey": "dimension" },
+    "GDN":         { "site": "CG_GDN",          "placementByFormat": { "Display": "Display", "Video": "Video" },                          "adKey": "dimension",
+                     "fileFormats": { "mode": "adSuffix", "aliases": { "jpg": "png", "jpeg": "png" }, "placements": { "gif": "GIF", "html": "HTML", "png": "Display" } } },
     "Facebook":    { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card" },
     "Meta":        { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card", "_note": "alias of Facebook" },
     "DemGen":      { "site": "CG_Demand_Gen",   "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela" },                     "adKey": "variant" },
