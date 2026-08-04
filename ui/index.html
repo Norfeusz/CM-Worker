@@ -16,9 +16,39 @@
     * { box-sizing:border-box; }
     body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif;
       background:var(--bg); color:var(--ink); }
-    header { background:var(--panel); border-bottom:1px solid var(--line);
-      padding:14px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+    /* Sticky: przy 45 adach i 100+ tagach strona jest długa, a „Zatwierdź strukturę”
+       i wskaźnik pracy muszą być widoczne bez skrolowania na górę. */
+    header { position:sticky; top:0; z-index:50;
+      background:var(--panel); border-bottom:1px solid var(--line);
+      padding:14px 20px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+      box-shadow:0 1px 3px rgba(16,24,40,.06); }
     header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:.2px; }
+
+    /* --- wskaźniki pracy ------------------------------------------------------
+       Jedno źródło prawdy w App (`pending`), żeby KAŻDE oczekiwanie było widoczne.
+       Wcześniej „Popraw wg uwag” i „Poproś o podpowiedzi” — najdłuższe, bo czekają
+       na model — dawały tylko szary tekst, który łatwo przeoczyć. */
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .spinner { display:inline-block; flex:none; width:14px; height:14px; border-radius:50%;
+      border:2px solid var(--accent-bg); border-top-color:var(--accent);
+      animation:spin .7s linear infinite; }
+    .spinner.big { width:20px; height:20px; border-width:3px; }
+    .busy-chip { display:flex; align-items:center; gap:9px; font-size:13px; font-weight:600;
+      color:var(--accent); background:var(--accent-bg); border:1px solid #dcd9fb;
+      padding:6px 13px; border-radius:999px; }
+    /* pasek na samej krawędzi ekranu — widoczny nawet gdy chip jest poza kadrem */
+    @keyframes slide { from { left:-40%; } to { left:100%; } }
+    .topbar { position:fixed; top:0; left:0; right:0; height:3px; z-index:60;
+      background:var(--accent-bg); overflow:hidden; }
+    .topbar i { position:absolute; top:0; height:3px; width:40%; background:var(--accent);
+      animation:slide 1.1s ease-in-out infinite; }
+    .busy-inline { display:flex; align-items:center; gap:10px; color:var(--accent);
+      font-weight:600; padding:10px 0; }
+    .busy-inline .sub { color:var(--muted); font-weight:400; }
+    @media (prefers-reduced-motion:reduce) {
+      .spinner, .topbar i { animation:none; }
+      .topbar i { left:0; width:100%; opacity:.6; }
+    }
     .wrap { max-width:1000px; margin:20px auto; padding:0 16px; }
     .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
       padding:16px 18px; margin-bottom:16px; }
@@ -155,8 +185,11 @@
           ))}
           {toApply.length > 0 && (
             <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              {/* Wyłączony na czas KAŻDEJ operacji (żeby nie puścić dwóch naraz), ale bez
+                  zmiany napisu: „Przebudowuję…” byłoby kłamstwem, gdy trwa np. wywołanie
+                  agenta. Co się dzieje, mówi wskaźnik w nagłówku. */}
               <button className="btn primary" disabled={busy} onClick={onApply}>
-                {busy ? 'Przebudowuję…' : `Zatwierdź przypisania (${toApply.length}) →`}</button>
+                Zatwierdź przypisania ({toApply.length}) →</button>
               <span className="hint">
                 {pending
                   ? '⚠️ Zmiany nie są jeszcze w drzewie poniżej — kliknij, żeby je zastosować.'
@@ -325,7 +358,7 @@
       );
     }
 
-    function InputPanel({ onResult, rebuildRef, onCanRebuild }) {
+    function InputPanel({ onResult, rebuildRef, onCanRebuild, onBusy }) {
       // one address per line: several LPs can belong to one order (all in the same
       // campaign), e.g. the same creatives tagged for prospecting and remarketing
       const [linkText, setLinkText] = useState('');
@@ -381,6 +414,10 @@
         if (!links.length) return fail('Nie podałeś adresu LP');
         if (!file) return fail('Nie wybrałeś pliku .zip');
         setBusy(true); setNote(''); setNoteErr(false); setSuggestData(null);
+        // report upwards: a rebuild triggered from the campaign card or from the folder
+        // answers must light up the same indicator as clicking "Analizuj" here
+        if (onBusy) onBusy(extra ? 'Przebudowuję propozycję' : 'Buduję propozycję',
+                           'parsuję zip, czytam kampanię i strony docelowe z CM360');
         try {
           const b64 = await new Promise((res, rej) => {
             const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
@@ -396,6 +433,7 @@
           else { onResult(data); setNoteErr(false); setNote('Zbudowano propozycję ✓'); }
         } catch (e) { fail('Nie udało się połączyć z serve.py: ' + e); }
         setBusy(false);
+        if (onBusy) onBusy(null);
       };
       const analyze = () => runAnalyze();
       // expose the analysis to the campaign card above, so swapping the campaign can
@@ -501,7 +539,10 @@
               <textarea rows="3" value={message} onChange={e => setMessage(e.target.value)}
                 placeholder="np. prośba o kody GDN dla formatów z załącznika..." /></label>
             <div>
-              <button className="btn primary" disabled={busy} onClick={analyze}>
+              <button className="btn primary" disabled={busy} onClick={analyze}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                {busy && <span className="spinner" style={{ borderTopColor: '#fff',
+                  borderColor: 'rgba(255,255,255,.35)', borderTopStyle: 'solid' }} />}
                 {busy ? 'Analizuję…' : 'Analizuj → zbuduj propozycję'}</button>
               {note && (noteErr
                 ? <span style={{ marginLeft: 10, padding: '3px 8px', borderRadius: 6,
@@ -610,6 +651,16 @@
 
       const clone = () => JSON.parse(JSON.stringify(p));
       const commit = np => setP(np);
+
+      // JEDNO źródło prawdy o tym, że coś trwa. Każda operacja sieciowa przechodzi przez
+      // `runBusy` albo raportuje przez `onBusy`, więc nie da się dodać nowej i zapomnieć
+      // o wskaźniku. `what` mówi na co czekamy — sam spinner nie informuje o niczym.
+      const [pending, setPending] = useState(null);   // {what, detail} | null
+      const setBusyLabel = (what, detail) => setPending(what ? { what, detail } : null);
+      async function runBusy(what, detail, fn) {
+        setBusyLabel(what, detail);
+        try { return await fn(); } finally { setBusyLabel(null); }
+      }
       const rebuildRef = useRef(null);          // InputPanel's runAnalyze (same link/zip)
       const [canRebuild, setCanRebuild] = useState(false);
       const [changeCamp, setChangeCamp] = useState(false);
@@ -652,16 +703,16 @@
 
       // folder -> landing page answers waiting to be sent (see setAnswer)
       const [foldersDirty, setFoldersDirty] = useState(false);
-      const [applying, setApplying] = useState(false);
       const applyFolderAnswers = () => {
         if (!canRebuild) return;
         const chosen = { ...((p && p.lpFolders && p.lpFolders.override) || {}) };
         Object.keys(answers).forEach(k => {
           if (k.startsWith('lp_folder:')) chosen[k.slice(10)] = answers[k];
         });
-        setFoldersDirty(false); setApplying(true);
-        Promise.resolve(rebuildOn({ ...campaignExtra(), folderMap: chosen }))
-          .finally(() => setApplying(false));
+        setFoldersDirty(false);
+        // no runBusy here: this goes through InputPanel's runAnalyze, which reports its
+        // own label upwards — wrapping it too would just fight over the same state
+        rebuildOn({ ...campaignExtra(), folderMap: chosen });
       };
 
       function setAnswer(id, val) {
@@ -789,95 +840,128 @@
 
       async function refine() {
         if (!remarks.trim()) { setAiNote('Wpisz uwagi, co poprawić.'); return; }
-        setAiNote('Wysyłam uwagi do Agenta AI…'); setAiResult(null);
-        try {
-          const resp = await fetch('/api/refine', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ proposal: p, answers, remarks }),
-          });
-          const d = await resp.json();
-          if (d.error) { setAiNote('Błąd: ' + d.error); return; }
-          setAiResult(d);
-          if (d.proposal) loadProposal(d.proposal);
-          setRemarks('');
-          setAiNote(`Agent zastosował ${d.applied} zmian`
-            + (d.skipped ? `, pominął ${d.skipped}` : '')
-            + (d.unclear && d.unclear.length ? `, ma ${d.unclear.length} pytań` : '') + ' ✓');
-        } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        setAiNote(''); setAiResult(null);
+        // model po drugiej stronie n8n potrafi myśleć dziesiątki sekund — bez wyraźnego
+        // wskaźnika użytkownik nie wie, czy kliknięcie w ogóle doszło
+        await runBusy('Agent interpretuje uwagi',
+                      'model zwraca listę operacji edycyjnych; może potrwać kilkadziesiąt sekund',
+                      async () => {
+          try {
+            const resp = await fetch('/api/refine', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ proposal: p, answers, remarks }),
+            });
+            const d = await resp.json();
+            if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+            setAiResult(d);
+            if (d.proposal) loadProposal(d.proposal);
+            setRemarks('');
+            setAiNote(`Agent zastosował ${d.applied} zmian`
+              + (d.skipped ? `, pominął ${d.skipped}` : '')
+              + (d.unclear && d.unclear.length ? `, ma ${d.unclear.length} pytań` : '') + ' ✓');
+          } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        });
       }
 
       async function assist() {
-        setAiNote('Pytam Agenta o pomoc ze strukturą…'); setAssistRes(null);
-        try {
-          const resp = await fetch('/api/assist', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ proposal: p }),
-          });
-          const d = await resp.json();
-          if (d.error) { setAiNote('Błąd: ' + d.error); return; }
-          setAssistRes(d.suggestions); setAiNote('Agent zwrócił podpowiedzi ✓');
-        } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        setAiNote(''); setAssistRes(null);
+        await runBusy('Agent analizuje strukturę',
+                      'szukam podpowiedzi w punktach niskiej pewności',
+                      async () => {
+          try {
+            const resp = await fetch('/api/assist', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ proposal: p }),
+            });
+            const d = await resp.json();
+            if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+            setAssistRes(d.suggestions); setAiNote('Agent zwrócił podpowiedzi ✓');
+          } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        });
       }
 
       // Accepting role (a)'s suggestions goes through the SAME apply_ops path as remarks
       // (the server translates them into ops), so there is one diff to review and no
       // second, untested way of changing the tree.
-      const [aiBusy, setAiBusy] = useState(false);
       async function applySuggestions() {
-        setAiBusy(true); setAiNote('Stosuję sugestie Agenta…');
-        try {
-          const resp = await fetch('/api/apply-suggestions', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ proposal: p, suggestions: assistRes }),
-          });
-          const d = await resp.json();
-          if (d.error) { setAiNote('Błąd: ' + d.error); setAiBusy(false); return; }
-          setAiResult(d);
-          if (d.proposal) loadProposal(d.proposal);
-          setAssistRes(null);
-          setAiNote(`Zastosowano ${d.applied} zmian`
-            + (d.skipped ? `, pominięto ${d.skipped}` : '') + ' ✓');
-        } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
-        setAiBusy(false);
+        setAiNote('');
+        await runBusy('Stosuję sugestie agenta', 'tłumaczę je na operacje i nakładam na drzewo',
+                      async () => {
+          try {
+            const resp = await fetch('/api/apply-suggestions', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ proposal: p, suggestions: assistRes }),
+            });
+            const d = await resp.json();
+            if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+            setAiResult(d);
+            if (d.proposal) loadProposal(d.proposal);
+            setAiNote(`Zastosowano ${d.applied} zmian`
+              + (d.skipped ? `, pominięto ${d.skipped}` : '') + ' ✓');
+          } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        });
       }
 
       async function doCommit(dryRun) {
         setCommitRes({ busy: true, dryRun });
-        try {
-          const eff = { ...p, placements: p.placements.filter(isVisible) };
-          const r = await fetch('/api/commit', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ proposal: eff, answers, dryRun }),
-          });
-          const d = await r.json();
-          setCommitRes(d);
-          // a campaign created just now must stop being "new", otherwise a second
-          // commit would try to create it all over again
-          if (!dryRun && d.campaignId && !p.campaign.id) {
-            const np = clone();
-            np.campaign.id = d.campaignId;
-            np.campaign.status = 'existing';
-            commit(np);
-          }
-        } catch (e) { setCommitRes({ error: String(e) }); }
+        await runBusy(dryRun ? 'Sprawdzam plan zapisu' : 'Zapisuję w CM360',
+                      dryRun ? 'dry-run — czytam stan konta, nic nie zapisuję'
+                             : 'tworzę LP, creative, placementy i ady, potem generuję tagi',
+                      async () => {
+          try {
+            const eff = { ...p, placements: p.placements.filter(isVisible) };
+            const r = await fetch('/api/commit', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ proposal: eff, answers, dryRun }),
+            });
+            const d = await r.json();
+            setCommitRes(d);
+            // a campaign created just now must stop being "new", otherwise a second
+            // commit would try to create it all over again
+            if (!dryRun && d.campaignId && !p.campaign.id) {
+              const np = clone();
+              np.campaign.id = d.campaignId;
+              np.campaign.status = 'existing';
+              commit(np);
+            }
+          } catch (e) { setCommitRes({ error: String(e) }); }
+        });
       }
 
       return (
         <div>
+          {/* pasek na samej krawędzi ekranu: widoczny niezależnie od pozycji skrola */}
+          {pending && <div className="topbar"><i /></div>}
+
           <header>
             <h1>🧩 CM Worker — weryfikacja struktury</h1>
+            {pending && (
+              <div className="busy-chip" role="status" aria-live="polite">
+                <span className="spinner" />
+                <span>{pending.what}…</span>
+              </div>
+            )}
             <div className="spacer" />
             <div className="toolbar">
               <label className="btn">Wczytaj JSON
                 <input type="file" accept="application/json" style={{ display: 'none' }} onChange={loadFile} /></label>
               <button className="btn" onClick={() => { loadProposal(null); setRemarks(''); setAiNote(''); }}>Wyczyść</button>
               <button className="btn" onClick={() => setShowJson(s => !s)}>{showJson ? 'Ukryj JSON' : 'Podgląd JSON'}</button>
-              <button className="btn primary" disabled={!p} onClick={() => doCommit(true)}>Zatwierdź strukturę →</button>
+              <button className="btn primary" disabled={!p || !!pending} onClick={() => doCommit(true)}>Zatwierdź strukturę →</button>
             </div>
           </header>
 
+          {/* na co dokładnie czekamy — spinner sam z siebie nie informuje o niczym */}
+          {pending && pending.detail && (
+            <div style={{ background: 'var(--accent-bg)', borderBottom: '1px solid #dcd9fb',
+                          padding: '7px 20px', fontSize: 13, color: 'var(--accent)' }}>
+              <b>{pending.what}</b> <span style={{ opacity: .8 }}>— {pending.detail}</span>
+            </div>
+          )}
+
           <div className="wrap">
-            <InputPanel onResult={loadProposal} rebuildRef={rebuildRef} onCanRebuild={setCanRebuild} />
+            <InputPanel onResult={loadProposal} rebuildRef={rebuildRef} onCanRebuild={setCanRebuild}
+              onBusy={setBusyLabel} />
 
             {!p && <div className="card"><span className="hint">Wprowadź adres LP i wgraj plik .zip w karcie „Nowe zlecenie", a następnie kliknij „Analizuj → zbuduj propozycję".</span></div>}
 
@@ -904,7 +988,7 @@
             </div>
 
             <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer}
-              onApply={applyFolderAnswers} pending={foldersDirty} busy={applying} />
+              onApply={applyFolderAnswers} pending={foldersDirty} busy={!!pending} />
             <LinesPanel lines={p.lines || [p.line]} source={p.source}
               existing={p.existingLines || []} folders={p.lpFolders} />
 
@@ -933,8 +1017,8 @@
                     </div>
                   ))}
                   <div style={{ marginTop: 8 }}>
-                    <button className="btn" disabled={!(p.ai.wired || {}).structure} onClick={assist}>
-                      🤖 Poproś Agenta o podpowiedzi</button>
+                    <button className="btn" disabled={!(p.ai.wired || {}).structure || !!pending}
+                      onClick={assist}>🤖 Poproś Agenta o podpowiedzi</button>
                     {!(p.ai.wired || {}).structure &&
                       <span className="hint" style={{ marginLeft: 10 }}>
                         nie podpięte — ustaw <code>N8N_STRUCTURE_URL</code></span>}
@@ -966,9 +1050,8 @@
                   ))}
                   {assistRes.notes && <div className="hint" style={{ marginTop: 6 }}>{assistRes.notes}</div>}
                   <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button className="btn primary" disabled={aiBusy}
-                      onClick={applySuggestions}>
-                      {aiBusy ? 'Stosuję…' : '✓ Zastosuj sugestie'}</button>
+                    <button className="btn primary" disabled={!!pending}
+                      onClick={applySuggestions}>✓ Zastosuj sugestie</button>
                     <button className="btn mini" onClick={() => setAssistRes(null)}>Zamknij</button>
                     <span className="hint">
                       Zastosuje nazwy linii i landing page. Nazwy adów i mapowania folderów
@@ -982,8 +1065,8 @@
                 <textarea rows="2" value={remarks} onChange={e => setRemarks(e.target.value)}
                   placeholder="Coś się nie zgadza w strukturze? Napisz co poprawić — Agent AI zinterpretuje uwagi i przygotuje poprawioną strukturę (np. 'Screening to osobny placement', '300x250 ma iść pod linia4')." />
                 <div>
-                  <button className="btn" disabled={!((p.ai || {}).wired || {}).intent} onClick={refine}>
-                    ✨ Popraw strukturę wg uwag (AI)</button>
+                  <button className="btn" disabled={!((p.ai || {}).wired || {}).intent || !!pending}
+                    onClick={refine}>✨ Popraw strukturę wg uwag (AI)</button>
                   {!((p.ai || {}).wired || {}).intent &&
                     <span className="hint" style={{ marginLeft: 10 }}>
                       nie podpięte — ustaw <code>N8N_INTENT_URL</code></span>}
@@ -1078,7 +1161,9 @@
 
             {commitRes && <div className="card">
               <div className="lines-title">{commitRes.dryRun ? '🔍 Podgląd zapisu (dry-run — nic nie zapisano)' : '✅ Zapis do CM360 wykonany'}</div>
-              {commitRes.busy && <div className="hint">Pracuję…</div>}
+              {commitRes.busy && <div className="busy-inline"><span className="spinner big" />
+                <span>{commitRes.dryRun ? 'Sprawdzam plan zapisu' : 'Zapisuję w CM360'}…
+                  <span className="sub"> to potrwa — czytam stan konta z API CM360</span></span></div>}
               {commitRes.error && <div className="hint">Błąd: {commitRes.error}</div>}
               {commitRes.log && commitRes.log.map((e, i) => (
                 <div key={i} style={{ padding: '2px 0' }}>
