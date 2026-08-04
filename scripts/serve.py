@@ -246,6 +246,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"campaigns": out}, ensure_ascii=False))
             except Exception as e:
                 return self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
+        if route == "/api/tags-file":
+            # Pobranie wygenerowanego arkusza. Wpuszczamy WYŁĄCZNIE nazwę pliku z
+            # katalogu data/ — `basename` ucina każdą próbę wyjścia w górę drzewa
+            # (../../credentials/token.json), a dodatkowo wymagamy rozszerzenia .xls.
+            from urllib.parse import urlparse, parse_qs, quote
+            name = os.path.basename((parse_qs(urlparse(self.path).query).get("name") or [""])[0])
+            data_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data"))
+            path = os.path.normpath(os.path.join(data_dir, name))
+            if not name.lower().endswith(".xls") or not path.startswith(data_dir) \
+                    or not os.path.isfile(path):
+                return self._send(404, json.dumps({"error": f"Nie ma pliku {name!r}."}),
+                                  "application/json; charset=utf-8")
+            with open(path, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.ms-excel")
+            self.send_header("Content-Disposition",
+                             f"attachment; filename*=UTF-8''{quote(name)}")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
         if route == "/api/campaign-lps":
             from urllib.parse import urlparse, parse_qs
             cid = (parse_qs(urlparse(self.path).query).get("campaignId") or [""])[0]
@@ -373,10 +394,14 @@ class Handler(BaseHTTPRequestHandler):
             fresh = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
             pairs, missing = resolve_tag_pairs(fresh, proposal)
             if pairs:
-                path = os.path.join(os.path.dirname(__file__), "..", "data", f"Tags_delta_{cid}.xls")
+                # nazwa pliku powstaje PO odczycie, bo schemat wymaga nazw kampanii
+                # i advertisera, a nie ich id: Tags_kampania_advertiser_data.xls
                 camp, adv, rows = export_tags.collect_rows(svc, TEST_PROFILE, cid, pairs)
+                path = os.path.join(os.path.dirname(__file__), "..", "data",
+                                    export_tags.tags_filename(camp, adv))
                 export_tags.write_xls(camp, adv, rows, path)
-                out["tags"] = {"file": os.path.abspath(path), "count": len(rows),
+                out["tags"] = {"file": os.path.abspath(path),
+                               "name": os.path.basename(path), "count": len(rows),
                                "rows": [{"ad": r[13], "creative": r[15]} for r in rows]}
             if missing:
                 out["tagsWarning"] = f"nie rozwiązano {len(missing)} tagów: {missing[:3]}"

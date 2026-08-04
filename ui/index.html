@@ -84,6 +84,14 @@
     .btn:hover { background:#f7f8fa; }
     .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
     .btn.primary:hover { filter:brightness(1.05); }
+    /* Nieklikalny przycisk MUSI to pokazywać. Bez tego wyglądał identycznie jak czynny,
+       więc użytkownik klikał w martwy element i nie wiedział, czy to on nie działa, czy
+       aplikacja. `!important` bije .primary, które ma własne tło i kolor tekstu. */
+    .btn:disabled, .btn[disabled] {
+      background:#f1f2f4 !important; color:#a1a7b0 !important;
+      border-color:#e2e4e8 !important; cursor:not-allowed; filter:none !important; }
+    .btn:disabled:hover, .btn[disabled]:hover { background:#f1f2f4 !important; }
+    .btn.link:disabled, .btn.link[disabled] { background:none !important; border:none !important; }
     .btn.mini { padding:2px 7px; font-size:12px; }
     .btn.link { border:none; background:none; color:var(--accent); padding:2px 6px; }
     .btn.del { color:var(--danger); }
@@ -682,6 +690,7 @@
         setSiteStruct(null);
         setFoldersDirty(false);
         setPlanFresh(false);       // inna struktura = poprzedni plan nic nie znaczy
+        setTagsFile(null);         // arkusz dotyczył poprzedniego zlecenia
         if (np && np.campaign && np.campaign.id && np.site) {
           fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(np.site.name)}`)
             .then(r => r.json()).then(setSiteStruct).catch(() => {});
@@ -696,6 +705,11 @@
       const [aiResult, setAiResult] = useState(null);   // diff operacji od agenta (b)
       const [assistRes, setAssistRes] = useState(null); // podpowiedzi agenta (a)
       const [commitRes, setCommitRes] = useState(null);
+
+      // Nazwa ostatnio wygenerowanego arkusza tagów. Trzymana OSOBNO od commitRes, żeby
+      // pobranie zostało dostępne także po kolejnym dry-runie — plik istnieje na dysku
+      // i nie ma powodu odbierać do niego dostępu. Zeruje się przy nowej propozycji.
+      const [tagsFile, setTagsFile] = useState(null);
 
       // Czy zapis ma być w ogóle POKAZANY. Zostaje widoczny (wyszarzony) także po zmianie
       // struktury — użytkownik ma widzieć, że przycisk był i dlaczego przestał działać,
@@ -950,6 +964,8 @@
             // Po realnym zapisie plan jest zużyty: struktura jest już w CM360, więc
             // powtórne kliknięcie „Wykonaj” zapisywałoby drugi raz. Wymuś nowy dry-run.
             if (!dryRun) setPlanFresh(false);
+            // arkusz tagów powstaje TYLKO przy realnym zapisie — dry-run go nie tworzy
+            if (!dryRun && d.tags && d.tags.name) setTagsFile(d.tags.name);
           } catch (e) { setCommitRes({ error: String(e) }); }
         });
       }
@@ -976,8 +992,9 @@
               {/* Zatwierdzenie jest nieklikalne, dopóki plan jest aktualny — nie ma czego
                   sprawdzać drugi raz. Odblokowuje się samo, gdy zmienisz strukturę. */}
               <button className="btn primary" disabled={!p || !!pending || planFresh}
-                title={planFresh ? 'Plan jest aktualny dla tej struktury — zmień coś, żeby sprawdzić ponownie'
-                                 : 'Dry-run: pokaże plan zapisu, nic nie zapisze'}
+                title={!p ? 'Najpierw zbuduj propozycję w karcie „Nowe zlecenie”'
+                  : planFresh ? 'Plan jest aktualny dla tej struktury — zmień coś, żeby sprawdzić ponownie'
+                  : 'Dry-run: pokaże plan zapisu, nic nie zapisze'}
                 onClick={() => doCommit(true)}>Zatwierdź strukturę →</button>
               {/* Zapis pojawia się dopiero po dry-runie i tylko dla planu policzonego
                   dla struktury, którą widać teraz na ekranie. */}
@@ -989,6 +1006,18 @@
                                    : 'Struktura zmieniła się po ostatnim podglądzie — zatwierdź ją ponownie'}
                   onClick={() => doCommit(false)}>Wykonaj w CM360 (zapis) →</button>
               )}
+              {/* Arkusz powstaje tylko przy REALNYM zapisie, więc do tego czasu nie ma
+                  czego pobierać — przycisk jest wyszarzony, a nie ukryty, żeby było
+                  widać, że taka możliwość istnieje. */}
+              <button className="btn primary" disabled={!tagsFile || !!pending}
+                title={tagsFile ? `Pobierz ${tagsFile}`
+                                : 'Arkusz powstanie po zapisie w CM360'}
+                onClick={() => {
+                  const a = document.createElement('a');
+                  a.href = '/api/tags-file?name=' + encodeURIComponent(tagsFile);
+                  a.download = tagsFile;
+                  document.body.appendChild(a); a.click(); a.remove();
+                }}>⬇ Pobierz tagi</button>
             </div>
           </header>
 
