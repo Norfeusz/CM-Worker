@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -64,7 +65,9 @@ def friendly_error(e):
 
 
 CTYPE = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
-         ".css": "text/css", ".json": "application/json"}
+         ".css": "text/css", ".json": "application/json",
+         # bez tego SVG leci jako octet-stream i część przeglądarek go nie narysuje
+         ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
 
 
 def _lp_folder_candidates(parsed):
@@ -473,6 +476,25 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    print(f"CM Worker UI + API na http://127.0.0.1:{port}/  (Ctrl+C aby zatrzymać)")
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    # `py scripts/serve.py [port] [--open]`  — kolejność argumentów dowolna
+    args = sys.argv[1:]
+    open_browser = "--open" in args
+    ports = [a for a in args if a.isdigit()]
+    port = int(ports[0]) if ports else 8765
+
+    # Przeglądarkę otwiera SERWER, a nie skrypt startowy: tylko tutaj wiadomo, że
+    # gniazdo jest już otwarte. Opóźnienie w .bat byłoby wyścigiem — przy zimnym
+    # starcie import bibliotek Google trwa dłużej niż zwykle i użytkownik dostawał
+    # „nie można połączyć się z serwerem”, mimo że sekundę później wszystko działa.
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    url = f"http://127.0.0.1:{port}/"
+    print(f"CM Worker UI + API na {url}  (Ctrl+C aby zatrzymać)")
+    if open_browser:
+        import webbrowser
+        # osobny wątek: przy niektórych domyślnych przeglądarkach `open()` blokuje
+        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+        print("Otwieram przeglądarkę… (zamknięcie TEGO okna zatrzymuje serwer)")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nZatrzymane.")

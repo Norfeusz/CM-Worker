@@ -28,9 +28,20 @@ REM set N8N_TIMEOUT=180
 
 REM ===================================================================
 cd /d "%~dp0"
+REM Konsola Windows domyslnie nie jest UTF-8, wiec polskie znaki w komunikatach
+REM serwera wychodzily jako "zatrzymaA‡". 65001 = UTF-8.
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
 echo Startuje CM Worker...
 echo   struktura: %N8N_STRUCTURE_URL%
 echo   uwagi:     %N8N_INTENT_URL%
 echo.
-py scripts\serve.py
+REM --open sprawia, ze przegladarka otwiera sie SAMA, gdy serwer zacznie nasluchiwac.
+REM Robi to serve.py, a nie ten plik: tylko serwer wie, kiedy gniazdo jest gotowe,
+REM a "start http://..." z opoznieniem bylby wyscigiem (przy zimnym starcie import
+REM bibliotek Google trwa dluzej i przegladarka pokazywala blad polaczenia).
+REM
+REM Zamkniecie TEGO okna zatrzymuje serwer.
+REM -u wylacza buforowanie, zeby komunikaty pojawialy sie od razu, a nie na koncu.
+py -u scripts\serve.py --open
 pause

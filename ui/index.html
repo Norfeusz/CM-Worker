@@ -39,6 +39,13 @@
       padding:14px 22px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
       box-shadow:0 2px 14px rgba(3,5,10,.18); }
     header h1 { font-size:16px; margin:0; font-weight:500; letter-spacing:.1px; color:#fff; }
+    /* Logo: wysokość dobrana do wysokości paska, proporcje z viewBox 116x60.
+       `flex:none`, żeby zwijanie paska na wąskim ekranie go nie ściskało. */
+    header .logo { height:34px; width:auto; flex:none; display:block; }
+    header .h1-sub { font-weight:400; color:var(--accent-soft); }
+    /* pionowa kreska oddzielająca znak marki od nazwy narzędzia */
+    header h1::before { content:""; display:inline-block; width:1px; height:18px;
+      background:rgba(255,255,255,.22); margin-right:14px; vertical-align:-4px; }
 
     /* --- wskaźniki pracy ------------------------------------------------------
        Jedno źródło prawdy w App (`pending`), żeby KAŻDE oczekiwanie było widoczne.
@@ -1008,7 +1015,10 @@
           {pending && <div className="topbar"><i /></div>}
 
           <header>
-            <h1>🧩 CM Worker — weryfikacja struktury</h1>
+            {/* Oryginalny asset z motywu cubegroup.pl (wersja z białym napisem — ta sama,
+                której strona używa na swoim ciemnym pasku), nie odtworzony ręcznie. */}
+            <img className="logo" src="/cubegroup-logo.svg" alt="Cube Group" />
+            <h1>CM Worker <span className="h1-sub">— weryfikacja struktury</span></h1>
             {pending && (
               <div className="busy-chip" role="status" aria-live="polite">
                 <span className="spinner" />
