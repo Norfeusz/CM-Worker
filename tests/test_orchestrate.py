@@ -202,5 +202,33 @@ check("każdy creative wskazuje SWOJE LP",
       [(True, False), (False, True)])
 check("2 tagi = 1 ad × 2 LP", len(proposal5["tags"]), 2)
 
+print("\nLP BEZ ADRESU — realna awaria z żywego zapisu: CM360 odrzucił insert bez url\n"
+      "(błąd 18112) w ŚRODKU zapisu, gdy kampania i część LP już powstały:")
+prop_nourl = B.build_proposal("GDN", parsed, camp, line,
+                              target_url="https://x/nieruchomosci/promocja")
+ad_nu = prop_nourl["placements"][0]["ads"][0]
+ad_nu["creatives"].append(
+    {"name": "linia2-refinans", "type": "html5", "packaged": False, "source_path": None,
+     "status": "new", "lpName": "linia2-GDN-refinans"})          # lpUrl BRAKUJE
+brak = Orchestrator.lp_urls_missing(prop_nourl, state)
+check("LP bez adresu zgłoszone przed zapisem", sorted(brak), ["linia2-GDN-refinans"])
+check("...z miejscem użycia, żeby wiedzieć któremu creative dopisać adres",
+      brak["linia2-GDN-refinans"], [f"Display/{ad_nu['name']}/linia2-refinans"])
+
+# pusty url jest OK, gdy LP już istnieje w kampanii — wtedy _ensure_lp znajdzie je
+# po nazwie i niczego nie tworzy
+state_ma_lp = dict(state, lps_by_name={"linia2-GDN-refinans": "LP99"})
+check("istniejące LP bez podanego url NIE jest problemem",
+      Orchestrator.lp_urls_missing(prop_nourl, state_ma_lp), {})
+
+prop_line_nourl = B.build_proposal("GDN", parsed, camp, line)   # bez target_url
+gdzie = Orchestrator.lp_urls_missing(prop_line_nourl, state).get("linia2-GDN")
+check("LP linii bez adresu też jest łapane", gdzie[0], "LP linii")
+check("...i wskazuje wszystkie creative, które z niego korzystają (to skutek, nie osobny błąd)",
+      len(gdzie), 1 + len(parsed["units"]))
+
+check("gdy wszystko ma adresy — brak zastrzeżeń",
+      Orchestrator.lp_urls_missing(proposal, state), {})
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

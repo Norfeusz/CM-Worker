@@ -61,6 +61,38 @@ class Orchestrator:
             return cr["lpName"], cr.get("lpUrl") or ""
         return proposal["line"]["lpName"], proposal["line"]["url"] or ""
 
+    @staticmethod
+    def lp_urls_missing(proposal, state):
+        """Landing pages the proposal wants to CREATE but gives no address for.
+
+        CM360 odrzuca `advertiserLandingPages.insert` bez url (błąd 18112 „URL strony
+        docelowej jest wymagany”) — i robi to w ŚRODKU zapisu, gdy kampania i część LP
+        już powstały. Dlatego to musi być sprawdzone PRZED pierwszym zapisem, dokładnie
+        jak brakujący Site.
+
+        Pusty url jest dopuszczalny tylko dla LP, które JUŻ jest w kampanii: wtedy
+        `_ensure_lp` znajduje je po nazwie i nic nie tworzy. Stąd potrzebny `state` —
+        bez niego nie da się odróżnić „wskazujemy istniejące LP” od „tworzymy LP bez
+        adresu”.
+
+        Zwraca {lpName: [gdzie to jest użyte]} — nazwy miejsc, żeby użytkownik wiedział,
+        któremu creative dopisać adres, a nie tylko że „czegoś brakuje”.
+        """
+        known = set(state.get("lps_by_name") or {})
+        bad = {}
+        pairs = [(proposal["line"]["lpName"], proposal["line"].get("url"), "LP linii")]
+        for pl in proposal.get("placements") or []:
+            for ad in pl.get("ads") or []:
+                for cr in ad.get("creatives") or []:
+                    name, url = Orchestrator._lp_key(proposal, cr)
+                    pairs.append((name, url, f"{pl['name']}/{ad['name']}/{cr['name']}"))
+        for name, url, where in pairs:
+            if not (url or "").strip() and name not in known:
+                bad.setdefault(name, [])
+                if where not in bad[name]:
+                    bad[name].append(where)
+        return bad
+
     def _ensure_lp(self, name, url, state):
         """Resolve an existing landing page by name (in campaign) or name+url (on the
         advertiser), else create it. Returns (lpId, alreadyInThisCampaign)."""

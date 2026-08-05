@@ -383,9 +383,24 @@ class Handler(BaseHTTPRequestHandler):
                 return {"error": f"Site nie istnieje na koncie: {', '.join(missing)}. "
                                  f"Dodaj go najpierw („Szukaj/dodaj site” w formularzu), "
                                  f"żeby zapis nie przerwał się po utworzeniu LP/kampanii."}
+        # LP bez adresu z tego samego powodu: CM360 odrzuca insert bez url (18112),
+        # ale robi to dopiero w środku zapisu, gdy kampania i część LP już powstały.
+        no_url = Orchestrator.lp_urls_missing(proposal, state)
+        if no_url and not dry:
+            def _gdzie(w):     # przy LP linii dotyczy to wszystkich creative — nie wypisuj setek
+                return ", ".join(w[:3]) + (f" i {len(w) - 3} więcej" if len(w) > 3 else "")
+            szczegoly = "; ".join(f"{n} (użyte w: {_gdzie(w)})" for n, w in sorted(no_url.items()))
+            return {"error": "Nie zapisuję: te strony docelowe nie mają adresu URL, a nie "
+                             "istnieją jeszcze w kampanii — CM360 odrzuciłby je w połowie "
+                             f"zapisu (błąd 18112). Uzupełnij adres albo wskaż istniejące "
+                             f"LP. Brakuje: {szczegoly}"}
         orch = Orchestrator(svc, TEST_PROFILE, TEST_ADVERTISER, campaign, dry_run=dry)
         log = orch.run(proposal, state)
         out = {"dryRun": dry, "log": log, "campaignId": orch.cid}
+        if no_url:
+            # w dry-runie tylko ostrzegamy, żeby użytkownik zobaczył problem PRZED
+            # kliknięciem zapisu, a nie dopiero jako odmowę
+            out["lpUrlWarning"] = sorted(no_url)
         if not dry:
             cid = orch.cid                 # a brand-new campaign only has an id now
             # recompute tags fresh from the (possibly user-edited) placements — the

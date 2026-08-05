@@ -1303,7 +1303,22 @@
             {showJson && <div className="card"><pre>{JSON.stringify(p, null, 2)}</pre></div>}
 
             {commitRes && <div className="card">
-              <div className="lines-title">{commitRes.dryRun ? '🔍 Podgląd zapisu (dry-run — nic nie zapisano)' : '✅ Zapis do CM360 wykonany'}</div>
+              {/* Nagłówek MUSI zależeć od wyniku, nie tylko od trybu. Dotąd przy błędzie
+                  z CM360 pisał „✅ Zapis wykonany" i dopiero niżej był komunikat błędu. */}
+              <div className="lines-title">{
+                commitRes.error ? (commitRes.dryRun ? '⛔ Podgląd zapisu nie powstał'
+                                                   : '⛔ Zapis do CM360 NIE POWIÓDŁ SIĘ')
+                : commitRes.dryRun ? '🔍 Podgląd zapisu (dry-run — nic nie zapisano)'
+                : '✅ Zapis do CM360 wykonany'}</div>
+              {commitRes.lpUrlWarning && commitRes.lpUrlWarning.length > 0 && (
+                <div style={{ margin: '8px 0', padding: '8px 11px', borderRadius: 8,
+                              background: 'var(--warn-bg)', color: 'var(--warn)',
+                              border: '1px solid var(--warn-line)', fontWeight: 600 }}>
+                  ⚠️ Te strony docelowe nie mają adresu URL: {commitRes.lpUrlWarning.join(', ')}.
+                  Zapis zostanie odrzucony, dopóki nie uzupełnisz adresu (albo nie wskażesz
+                  istniejącego LP) — CM360 nie przyjmuje LP bez adresu.
+                </div>
+              )}
               {commitRes.busy && <div className="busy-inline"><span className="spinner big" />
                 <span>{commitRes.dryRun ? 'Sprawdzam plan zapisu' : 'Zapisuję w CM360'}…
                   <span className="sub"> to potrwa — czytam stan konta z API CM360</span></span></div>}
