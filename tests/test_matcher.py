@@ -171,6 +171,26 @@ after = M.resolve_lines([BASE.replace("mkonto", "oszczedzam"),
 check("new lines continue after the existing max, without colliding",
       [l["lineNumber"] for l in after], [2, 3])
 
+print("\nJEDEN link kolidujący z istniejącym LP — realny błąd z żywej sesji:")
+# Zgłoszone: nowy LP różnił się od linia2-GDN tylko parametrem utm_campaign. Narzędzie
+# nie dodało nowej linii — użyło istniejącego LP linia2-GDN i istniejącej kreacji linia2,
+# i dopięło ją do wszystkich wymiarów z paczki. Przyczyna: jeden link nie ma rodzeństwa,
+# więc lp_discriminators zwraca [] i etykiety nie było skąd wziąć.
+KRED = ["indywidualny", "kredyty"]
+KBASE = "https://www.mbank.pl/lp2/2026/c1/indywidualny/kredyty/kredyt-hipoteczny/przenosze-kredyt/kwiecien/"
+NOWY = KBASE + "?utm_source=gdn&utm_medium=cpc&utm_campaign=refinansowanie2026"
+STARY = KBASE + "?utm_source=gdn&utm_medium=cpc&utm_campaign=kampania_gdn"
+KLPS = [{"lpName": "linia2-GDN", "lpUrl": STARY}]
+r_kol = M.resolve_lines([NOWY], KRED, "GDN", KLPS)[0]
+check("kolizja z istniejącym LP -> etykieta z różnicy wobec TEGO LP, nie ciche użycie go",
+      (r_kol["lineNumber"], r_kol["lpName"], r_kol["creativeName"]),
+      (2, "linia2-GDN-refinansowanie2026", "linia2-refinansowanie2026"))
+r_ten = M.resolve_lines([STARY], KRED, "GDN", KLPS)[0]
+check("ten sam adres co istniejące LP -> używamy go, bez zbędnej etykiety",
+      (r_ten["lpName"], r_ten["creativeName"]), ("linia2-GDN", "linia2"))
+check("konflikt nadal zgłaszany, żeby użytkownik mógł wybrać reuse",
+      M.detect_line_conflict(NOWY, KRED, "GDN", KLPS)["conflict"], True)
+
 print("\nseveral LPs in one order — folder -> LP matching:")
 fm = M.match_folders_to_lps(["prospecting", "remarketing"], d)
 check("folder names matching utm values", fm["map"], {"prospecting": 0, "remarketing": 1})

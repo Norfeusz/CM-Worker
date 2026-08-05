@@ -368,9 +368,24 @@ def resolve_lines(urls, anchor, source, existing_lps, labels=None):
         # label the LP when siblings share the number, or when the plain name is
         # already taken in the campaign by a DIFFERENT url — `_ensure_lp` resolves
         # by name, so a silent collision would point creatives at the wrong page.
-        collides = (existing_by_name.get(lp_name(no, source), l["url"]) != l["url"])
-        needs = (no in shared_no or collides) and bool(l["label"])
-        l["lpName"] = lp_name(no, source, l["label"] if needs else None)
-        l["creativeName"] = creative_name(no, l["label"] if needs else None)
+        plain = lp_name(no, source)
+        clash_url = existing_by_name.get(plain)
+        collides = clash_url is not None and clash_url != l["url"]
+        label = l["label"]
+        if collides and not label:
+            # Jeden link w zleceniu nie ma rodzeństwa, więc `lp_discriminators` zwraca
+            # pustą listę i etykiety nie ma skąd wziąć — ale jest z czym porównać:
+            # KOLIDUJĄCE LP. Bez tego nazwa zostawała `linia2-GDN`, `_ensure_lp`
+            # znajdował istniejące LP po nazwie i całe zlecenie po cichu dopinało się
+            # do cudzej linii, razem z jej creative. Dokładnie ten błąd zgłoszono
+            # z żywej sesji (utm_campaign=refinansowanie2026 kontra kampania_gdn).
+            toks = lp_discriminators([l["url"], clash_url], anchor)[0]
+            # gdy token jest nieczytelny (same cyfry), bierzemy go i tak: brzydka, ale
+            # ODRĘBNA nazwa jest lepsza niż cicha kolizja z cudzym LP
+            label = lp_label(toks) or next((t for t in toks if t), None)
+        needs = (no in shared_no or collides) and bool(label)
+        l["label"] = label
+        l["lpName"] = lp_name(no, source, label if needs else None)
+        l["creativeName"] = creative_name(no, label if needs else None)
         l["labelled"] = needs
     return lines
