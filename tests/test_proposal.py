@@ -88,17 +88,17 @@ pm = B.build_proposal("GDN", parsed, camp, lines=LINES)
 plm = pm["placements"][0]
 check("obie linie w propozycji",
       [l["lpName"] for l in pm["lines"]],
-      ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+      ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
 check("line = pierwsza linia (zgodność ze starym kontraktem)",
-      pm["line"]["lpName"], "linia1-prospecting-GDN")
+      pm["line"]["lpName"], "linia1-GDN-prospecting")
 check("nadal jeden placement", len(pm["placements"]), 1)
 check("nadal 6 adów (wymiary)", len(plm["ads"]), 6)
 check("każdy ad ma 2 creative (po jednym na LP)",
       {len(a["creatives"]) for a in plm["ads"]}, {2})
 check("creative niesie WŁASNE LP (orkiestrator je utworzy i zarejestruje)",
       [(c["name"], c["lpName"], c["lpUrl"]) for c in plm["ads"][0]["creatives"]],
-      [("linia1-prospecting", "linia1-prospecting-GDN", PROSP),
-       ("linia1-remarketing", "linia1-remarketing-GDN", REMKT)])
+      [("linia1-prospecting", "linia1-GDN-prospecting", PROSP),
+       ("linia1-remarketing", "linia1-GDN-remarketing", REMKT)])
 check("12 tagów = 6 adów × 2 LP", len(pm["tags"]), 12)
 
 print("\ndwa LP + zip z folderami prospecting/ i remarketing/ -> materiały rozdzielone:")
@@ -125,8 +125,8 @@ ads_s = {a["name"]: a for a in ps["placements"][0]["ads"]}
 check("2 ady (wymiary z obu folderów zwinięte)", sorted(ads_s), ["160x600", "300x250"])
 check("300x250 ma creative dla obu LP",
       [(c["name"], c["lpName"]) for c in ads_s["300x250"]["creatives"]],
-      [("linia1-prospecting", "linia1-prospecting-GDN"),
-       ("linia1-remarketing", "linia1-remarketing-GDN")])
+      [("linia1-prospecting", "linia1-GDN-prospecting"),
+       ("linia1-remarketing", "linia1-GDN-remarketing")])
 check("każdy creative wskazuje materiał z WŁASNEGO folderu",
       [c["source_path"] for c in ads_s["300x250"]["creatives"]],
       ["prospecting/300x250", "remarketing/300x250"])

@@ -95,6 +95,34 @@ c2 = M.detect_line_conflict(
     YOUNG, "GDN", young_lps)
 check("different path -> conflict=False", c2["conflict"], False)
 
+print("\nkonwencja nazw: linia# -> ŹRÓDŁO -> słowo rozróżniające (o ile jest):")
+check("LP bez etykiety", M.lp_name(1, "Facebook"), "linia1-Facebook")
+check("LP z etykietą — źródło ZAWSZE przed etykietą",
+      M.lp_name(1, "Facebook", "lookalike"), "linia1-Facebook-lookalike")
+check("creative nie nosi źródła", M.creative_name(1, "lookalike"), "linia1-lookalike")
+check("creative bez etykiety", M.creative_name(7), "linia7")
+check("rozbiór nazwy z etykietą", M.split_lp_name("linia1-Facebook-lookalike"),
+      (1, "Facebook", "lookalike"))
+check("rozbiór nazwy bez etykiety", M.split_lp_name("linia2-GDN"), (2, "GDN", None))
+check("etykieta może mieć myślniki — źródłem jest tylko pierwszy segment",
+      M.split_lp_name("linia3-GDN-konto-firmowe"), (3, "GDN", "konto-firmowe"))
+check("nazwa spoza konwencji -> None", M.split_lp_name("refinans-prospecting"), None)
+
+# Ta kolejność coś NAPRAWIA, nie tylko przestawia: dotąd źródła nie dało się odczytać
+# z nazwy z etykietą, bo stało na końcu za nieznaną liczbą segmentów, więc wykrywanie
+# konfliktu linii dla takiego LP w ogóle nie działało.
+LBL = [{"lpName": "linia5-GDN-prospecting",
+        "lpUrl": "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/young/?kampania=a"}]
+c3 = M.detect_line_conflict(
+    "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/young/?kampania=b",
+    YOUNG, "GDN", LBL)
+check("konflikt wykryty także dla LP z etykietą (wcześniej przepadał)",
+      (c3["conflict"], c3["existingLpName"]), (True, "linia5-GDN-prospecting"))
+c4 = M.detect_line_conflict(
+    "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/young/?kampania=b",
+    YOUNG, "FB", LBL)
+check("inne źródło -> to nie ten konflikt", c4["conflict"], False)
+
 print("\nnormalization (folder names vs URL tokens):")
 check("Polish diacritics + separators", M.normalize("Materiały_Słońce 300x250"),
       "materialy_slonce_300x250")
@@ -122,8 +150,8 @@ check("two NEW paths in one order get DIFFERENT numbers",
 variants = M.resolve_lines([PROSP, REMKT], KONTA, "GDN", [])
 check("same path, different utm -> ONE line, two labelled LPs",
       [(l["lineNumber"], l["lpName"], l["creativeName"]) for l in variants],
-      [(1, "linia1-prospecting-GDN", "linia1-prospecting"),
-       (1, "linia1-remarketing-GDN", "linia1-remarketing")])
+      [(1, "linia1-GDN-prospecting", "linia1-prospecting"),
+       (1, "linia1-GDN-remarketing", "linia1-remarketing")])
 
 check("identical links collapse to one LP",
       len(M.resolve_lines([PROSP, PROSP], KONTA, "GDN", [])), 1)
@@ -135,7 +163,7 @@ check("known URL keeps its existing LP name (no duplicate LP for one address)",
       (mixed[0]["lpName"], mixed[0]["creativeName"]), ("linia1-GDN", "linia1"))
 check("its sibling is labelled instead",
       (mixed[1]["lineNumber"], mixed[1]["lpName"], mixed[1]["creativeName"]),
-      (1, "linia1-remarketing-GDN", "linia1-remarketing"))
+      (1, "linia1-GDN-remarketing", "linia1-remarketing"))
 
 # a new line added next to an existing one must not reuse number 1
 after = M.resolve_lines([BASE.replace("mkonto", "oszczedzam"),
@@ -188,7 +216,7 @@ ids = M.resolve_lines([BASE + "?utm_content=12345", BASE + "?utm_content=67890"]
                       KONTA, "GDN", [], labels={0: "prospecting", 1: "remarketing"})
 check("unreadable URL tokens + folder labels -> usable LP names",
       [l["lpName"] for l in ids],
-      ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+      ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

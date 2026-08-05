@@ -94,9 +94,9 @@ proposal3 = B.build_proposal("GDN", parsed, camp, line,
 ad3 = proposal3["placements"][0]["ads"][0]  # brand-new ad -> exercises the CREATE+append path
 ad3["creatives"] = [
     {"name": "linia3-slonce", "type": "html5", "packaged": False, "source_path": None,
-     "status": "new", "lpName": "linia3-slonce-GDN", "lpUrl": "https://x/slonce?utm_content=slonce"},
+     "status": "new", "lpName": "linia3-GDN-slonce", "lpUrl": "https://x/slonce?utm_content=slonce"},
     {"name": "linia3-niebo", "type": "html5", "packaged": False, "source_path": None,
-     "status": "new", "lpName": "linia3-niebo-GDN", "lpUrl": "https://x/niebo?utm_content=niebo"},
+     "status": "new", "lpName": "linia3-GDN-niebo", "lpUrl": "https://x/niebo?utm_content=niebo"},
     {"name": "linia3", "type": "html5", "packaged": False, "source_path": None, "status": "new"},
 ]
 state3 = dict(state, creatives_by_name={}, ad_creatives={})
@@ -107,13 +107,13 @@ log3 = orch3.run(proposal3, state3)
 
 lp_creates = {e["name"] for e in log3 if e["kind"] == "landingPage"}
 check("3 distinct LPs resolved (2 custom + 1 shared line LP)", lp_creates,
-      {"linia3-slonce-GDN", "linia3-niebo-GDN", "linia2-GDN"})
+      {"linia3-GDN-slonce", "linia3-GDN-niebo", "linia2-GDN"})
 ad_entries = [e for e in log3 if e["kind"] == "ad" and e["name"] == ad3["name"]]
 check("ad has 3 log entries (CREATE + 2 append UPDATEs)", len(ad_entries), 3)
 check("slonce creative appended with its OWN LP",
-      any("linia3-slonce" in e["detail"] and "linia3-slonce-GDN" in e["detail"] for e in ad_entries), True)
+      any("linia3-slonce" in e["detail"] and "linia3-GDN-slonce" in e["detail"] for e in ad_entries), True)
 check("niebo creative appended with its OWN LP",
-      any("linia3-niebo" in e["detail"] and "linia3-niebo-GDN" in e["detail"] for e in ad_entries), True)
+      any("linia3-niebo" in e["detail"] and "linia3-GDN-niebo" in e["detail"] for e in ad_entries), True)
 check("plain linia3 creative uses the SHARED line LP",
       any("creative=linia3 " in e["detail"] and "linia2-GDN" in e["detail"] for e in ad_entries) or
       any("append creative linia3 " in e["detail"] and "linia2-GDN" in e["detail"] for e in ad_entries), True)
@@ -125,7 +125,7 @@ proposal4 = B.build_proposal("GDN", parsed, camp_brand_new, line,
                              target_url="https://x/nieruchomosci/promocja")
 proposal4["placements"][0]["ads"][0]["creatives"].append(
     {"name": "linia2-niebo", "type": "html5", "packaged": False, "source_path": None,
-     "status": "new", "lpName": "linia2-niebo-GDN", "lpUrl": "https://x/niebo"})
+     "status": "new", "lpName": "linia2-GDN-niebo", "lpUrl": "https://x/niebo"})
 state4 = {"sites_by_name": {"CG_GDN": "SITE1"}, "placements": {}, "ads": {},
           "ad_creatives": {}, "creatives_by_name": {},
           "lps_by_name": {}, "adv_lp_by_name_url": {}}
@@ -142,7 +142,7 @@ check("LP linii powstaje PRZED kampanią (wymagany defaultLandingPageId)",
 check("kampania powstaje PRZED placementem",
       kinds.index("campaign") < kinds.index("placement"), True)
 check("LP linii nie jest rejestrowana osobno (jest defaultem kampanii)",
-      [e["name"] for e in log4 if e["kind"] == "campaign-LP"], ["linia2-niebo-GDN"])
+      [e["name"] for e in log4 if e["kind"] == "campaign-LP"], ["linia2-GDN-niebo"])
 check("start = dziś", orch4.start_date, datetime.date.today().isoformat())
 check("koniec = start + 5 lat",
       datetime.date.fromisoformat(orch4.end_date).year
@@ -186,10 +186,10 @@ log5 = orch5.run(proposal5, state5)
 print()
 lp5 = [e["name"] for e in log5 if e["kind"] == "landingPage"]
 check("dokładnie DWA LP — żadnego osieroconego LP „linii” obok nich",
-      sorted(lp5), ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+      sorted(lp5), ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
 check("drugie LP zarejestrowane na liście stron docelowych kampanii",
       [e["name"] for e in log5 if e["kind"] == "campaign-LP"],
-      ["linia1-prospecting-GDN", "linia1-remarketing-GDN"])
+      ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
 check("dwa creative, po jednym na LP",
       sorted(e["name"] for e in log5 if e["kind"] == "creative"),
       ["linia1-prospecting", "linia1-remarketing"])

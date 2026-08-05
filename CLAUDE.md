@@ -203,9 +203,9 @@ Obie role przetestowane end-to-end na prawdziwym modelu. Rzeczy, które kosztowa
    zwracało pustą odpowiedź 200.** Użyj `respondWith: "firstIncomingItem"` — bez wyrażenia,
    więc nie ma czego źle zinterpretować.
 3. **Prompt musi jawnie podawać konwencję nazw LP**, inaczej model wstawia audience tam,
-   gdzie ma być źródło. Poprawne: LP = `linia{N}-{ŹRÓDŁO}` (a przy wielu LP na linię
-   `linia{N}-{wariant}-{ŹRÓDŁO}`), creative = `linia{N}-{audience}`. Potwierdzone żywymi
-   danymi konta (`linia1-FB`, `linia2-GDN`).
+   gdzie ma być źródło. Obowiązująca konwencja (patrz sekcja „Konwencja nazw" niżej):
+   LP = `linia{N}-{ŹRÓDŁO}[-{słowo rozróżniające}]`, creative = `linia{N}[-{audience}]`.
+   Potwierdzone żywymi danymi konta (`linia1-FB`, `linia2-GDN`).
 4. **Zmiana promptu wymaga restartu `serve.py`** — moduł jest zaimportowany w pamięci
    procesu, edycja pliku nie działa na żywo. Objawia się identyczną odpowiedzią po poprawce.
 5. Model potrafi być nadgorliwy: przy zipie bez podfolderów zwracał `group_mappings` z pustym
@@ -229,6 +229,27 @@ Obie role przetestowane end-to-end na prawdziwym modelu. Rzeczy, które kosztowa
    regresyjny w `test_ai_agents.py`. **Wniosek na przyszłość: testy na atrapie webhooka nie
    wyłapią tej klasy błędu, bo odpowiedzi atrapy pisze się pod własne założenia** — po każdej
    zmianie kontraktu operacji trzeba jeden przebieg na żywym modelu.
+
+## Konwencja nazw LP i creative (ZMIENIONA 05.08.2026 — kolejność jest wymogiem)
+
+```
+Landing page:  linia{N}-{ŹRÓDŁO}[-{słowo rozróżniające}]     linia2-GDN, linia1-Facebook-lookalike
+Creative:      linia{N}[-{słowo rozróżniające}]              linia2, linia1-lookalike
+```
+
+**Numer linii, potem ŹRÓDŁO, a słowo rozróżniające na końcu i tylko gdy istnieje.**
+Creative **nie nosi źródła** — źródło jest wyłącznie w nazwie LP.
+
+Poprzednio etykieta stała w środku (`linia1-lookalike-Facebook`). To nie była tylko
+kwestia gustu: przy takiej kolejności **nie dało się odczytać źródła z nazwy**, bo stało
+na końcu za nieznaną liczbą segmentów. Na tym przewracało się `detect_line_conflict`,
+które porównuje źródło istniejącego LP z wybranym w UI — dla LP z etykietą nie wykrywało
+konfliktu w ogóle. Po zmianie źródło to zawsze pierwszy segment po numerze, więc jest
+jednoznaczne (test regresyjny w `test_matcher.py`).
+
+Konwencja żyje w **jednym miejscu**: `matcher.lp_name()`, `matcher.creative_name()`,
+`matcher.split_lp_name()`. Nie buduj tych nazw ręcznie w innych plikach — prompt roli (b)
+opisuje ją słownie i też został zaktualizowany.
 
 ## Model domenowy (zwalidowany na żywych danych CM360)
 
@@ -338,8 +359,7 @@ już modelu.
      listę `{lpUrl, source, audience, lpName, creativeName}` i na żywym Gemini działa
      poprawnie (zweryfikowane: dwa LP prospecting/remarketing → dwie linie, prawidłowe
      nazwy). Czyli inteligencja do interpretacji LP w dużej części istnieje.
-   - Konwencja nazw: LP = `linia{N}-{ŹRÓDŁO}`, a przy wielu LP na linię
-     `linia{N}-{wariant}-{ŹRÓDŁO}`; creative = `linia{N}-{audience}`.
+   - Konwencja nazw: patrz sekcja „Konwencja nazw LP i creative" niżej.
 
    **Co trzeba dopisać:**
    1. **Wejście**: `/api/build-proposal` musi przyjąć listę linków (np. `links: [...]`,

@@ -166,14 +166,17 @@ Hard rules:
     build on it; a new number is only for a path that has none.
 
 NAMING — these two are different and must not be mixed up:
-  * Landing page name  = "linia{N}-{SOURCE}"      e.g. linia2-GDN, linia1-FB
-    The suffix is the SOURCE (GDN/FB/DemGen/...), never the audience. Confirmed against
-    live account data.
-    When ONE line needs SEVERAL landing pages (different audiences or creative variants
-    pointing at different URLs), keep the source suffix last and put the distinguishing
-    part in the middle: "linia{N}-{variant}-{SOURCE}"  e.g. linia2-prospecting-GDN.
-  * Creative name      = the line, plus the variant/audience when there is more than one
-    e.g. linia2, linia2-prospecting, linia4-slonce, refinans-prospecting.
+  * Landing page name = "linia{N}-{SOURCE}[-{distinguishing word}]"
+    ORDER IS MANDATORY: line number, then SOURCE (GDN/Facebook/DemGen/...), and only
+    then the distinguishing word, and only when there is one.
+        linia2-GDN                 one landing page for line 2
+        linia1-Facebook-lookalike  line 1 has several pages; this is the lookalike one
+    The segment right after the number is ALWAYS the source, never the audience.
+    Do NOT put the distinguishing word in the middle: "linia1-lookalike-Facebook" is
+    the OLD form and is no longer valid — with it the source cannot be read back out
+    of the name, because nothing says which segment it is.
+  * Creative name = "linia{N}[-{distinguishing word}]" — NO source at all.
+        linia2, linia1-lookalike, linia4-slonce
     Creative names carry the AUDIENCE; landing page names carry the SOURCE.
 """
 
@@ -240,7 +243,7 @@ Rules:
   * Anything you cannot confidently turn into an op goes into `unclear` as a short question
     in Polish — do not guess it into an op.
   * RENAMING A LINE EVERYWHERE is `rename_creative_all`, never `apply_creative_to_all`.
-    "Dopisz coś do nazwy linii", "linie mają nazywać się linia8-firmootwieracz" = a rename.
+    "Dopisz coś do nazwy linii", "linie mają nazywać się linia8-GDN-firmootwieracz" = a rename.
     `apply_creative_to_all` ADDS the creative to every ad, so using it for a rename first
     duplicates every line, and deleting the old names then leaves every line sitting on
     every ad — destroying which materials each page actually received. This happened; do

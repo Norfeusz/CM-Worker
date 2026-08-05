@@ -107,14 +107,52 @@ def match_campaigns(url, anchor, campaign_lps):
     return ranked, suggest_new
 
 
+# --- konwencja nazw (JEDNO miejsce, w którym się ją buduje i czyta) -----------
+# Nazwa LP: linia{N}-{ŹRÓDŁO}[-{słowo rozróżniające}]  np. linia1-Facebook-lookalike
+# Nazwa creative: linia{N}[-{słowo rozróżniające}]      np. linia1-lookalike
+#
+# Kolejność jest wymogiem, nie estetyką: numer linii, potem źródło, a słowo
+# rozróżniające na końcu i tylko gdy istnieje. Wcześniej etykieta stała w środku
+# (`linia1-lookalike-Facebook`) i nie dało się odczytać źródła z nazwy — trzeba było
+# zgadywać, który segment nim jest, na czym przewracało się wykrywanie konfliktu linii.
+LP_NAME_RE = re.compile(r"^\s*linia\s*(\d+)(?:[-_](.*))?$", re.I)
+
+
+def lp_name(number, source, label=None):
+    """Nazwa landing page w obowiązującej konwencji."""
+    return f"linia{number}-{source}" + (f"-{label}" if label else "")
+
+
+def creative_name(number, label=None):
+    """Nazwa creative — BEZ źródła; źródło niesie nazwa LP."""
+    return f"linia{number}" + (f"-{label}" if label else "")
+
+
+def split_lp_name(name):
+    """(numer, źródło, etykieta) z nazwy LP; None, gdy nazwa nie trzyma konwencji.
+
+    Dzięki temu, że źródło stoi zaraz po numerze, da się je wyłuskać jednoznacznie
+    także wtedy, gdy nazwa ma słowo rozróżniające.
+    """
+    m = LP_NAME_RE.match(name or "")
+    if not m:
+        return None
+    parts = (m.group(2) or "").split("-", 1)
+    src = parts[0].strip() or None
+    label = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+    return int(m.group(1)), src, label
+
+
 def detect_line_conflict(url, anchor, source, existing_lps):
     """Ambiguous case (must ASK): an existing line has the SAME path AND same source
     but a DIFFERENT query (e.g. only `sprzedawca` differs) -> reuse vs add new line."""
     t_path = "/".join(s.lower() for s in (remaining_path(url, anchor) or []))
     t_q = urlparse(url if "//" in url else "//" + url).query
     for lp in existing_lps:
-        m = re.search(r"linia\s*\d+[-_]?(.*)$", lp.get("lpName", "") or "", re.I)
-        lp_src = (m.group(1) if m else "").strip().lower()
+        # źródło to segment ZARAZ po numerze linii, więc nazwa ze słowem
+        # rozróżniającym (linia1-Facebook-lookalike) też się poprawnie rozbiera
+        parsed = split_lp_name(lp.get("lpName"))
+        lp_src = (parsed[1] or "").lower() if parsed else ""
         lp_url = lp.get("lpUrl", "") or ""
         lp_path = "/".join(s.lower() for s in (remaining_path(lp_url, anchor) or []))
         lp_q = urlparse(lp_url if "//" in lp_url else "//" + lp_url).query
@@ -147,7 +185,7 @@ def resolve_line(url, anchor, source, existing_lps):
         "lineNumber": line_no,
         "reused": reused is not None,
         "source": source,
-        "lpName": f"linia{line_no}-{source}",
+        "lpName": lp_name(line_no, source),
         "path": "/".join(target),
     }
 
@@ -314,22 +352,25 @@ def resolve_lines(urls, anchor, source, existing_lps, labels=None):
     shared_no = {l["lineNumber"] for l in lines
                  if sum(1 for x in lines if x["lineNumber"] == l["lineNumber"]) > 1}
     for l in lines:
-        base = f"linia{l['lineNumber']}"
+        no = l["lineNumber"]
         # this exact url is already a landing page here: keep its name instead of
         # minting a second LP for the same address under a labelled name
         if l["url"] in existing_by_url:
             name = existing_by_url[l["url"]]
             l["lpName"] = name
-            l["creativeName"] = re.sub(rf"[-_]{re.escape(source)}$", "", name, flags=re.I)
-            l["labelled"] = l["creativeName"] != base
+            # creative bierze etykietę z istniejącej nazwy LP, a nie przez obcięcie
+            # źródła z końca — po zmianie kolejności źródło stoi w ŚRODKU
+            parsed = split_lp_name(name)
+            label = parsed[2] if parsed else None
+            l["creativeName"] = creative_name(no, label)
+            l["labelled"] = bool(label)
             continue
         # label the LP when siblings share the number, or when the plain name is
         # already taken in the campaign by a DIFFERENT url — `_ensure_lp` resolves
         # by name, so a silent collision would point creatives at the wrong page.
-        collides = (existing_by_name.get(f"{base}-{source}", l["url"]) != l["url"])
-        needs = l["lineNumber"] in shared_no or collides
-        l["lpName"] = (f"{base}-{l['label']}-{source}" if needs and l["label"]
-                       else f"{base}-{source}")
-        l["creativeName"] = f"{base}-{l['label']}" if needs and l["label"] else base
-        l["labelled"] = needs and bool(l["label"])
+        collides = (existing_by_name.get(lp_name(no, source), l["url"]) != l["url"])
+        needs = (no in shared_no or collides) and bool(l["label"])
+        l["lpName"] = lp_name(no, source, l["label"] if needs else None)
+        l["creativeName"] = creative_name(no, l["label"] if needs else None)
+        l["labelled"] = needs
     return lines

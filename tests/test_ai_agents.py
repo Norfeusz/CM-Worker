@@ -238,9 +238,9 @@ check("rename_creative_all nieistniejącej linii -> pominięte",
 check("rename_creative_all może od razu ustawić LP",
       {c.get("lpName") for pl in A.apply_ops(uneven, [op(
           "rename_creative_all", creative="linia8", to="linia8-frc",
-          lpName="linia8-frc-GDN", lpUrl="https://x/frc")])[0]["placements"]
+          lpName="linia8-GDN-frc", lpUrl="https://x/frc")])[0]["placements"]
        for a in pl["ads"] for c in a["creatives"] if c["name"] == "linia8-frc"},
-      {"linia8-frc-GDN"})
+      {"linia8-GDN-frc"})
 
 print("\nsugestie roli (a) -> operacje roli (b) (jedna sprawdzona ścieżka stosowania):")
 multi = B.build_proposal("GDN", parsed, camp, lines=[
@@ -254,7 +254,7 @@ sugg = {"advertiser_guess": None, "group_mappings": [
         "ad_naming": [{"unit": "FRC GIF_160x600", "adName": "160x600_gif", "reason": "x"}],
         "lines": [
             {"lpUrl": "https://x/frc", "source": "GDN", "audience": "firmootwieracz",
-             "lpName": "linia8-firmootwieracz-GDN", "creativeName": "linia8-firmootwieracz"},
+             "lpName": "linia8-GDN-firmootwieracz", "creativeName": "linia8-firmootwieracz"},
             {"lpUrl": "https://x/nie-ma-takiego", "source": "GDN", "audience": None,
              "lpName": "linia99-GDN", "creativeName": "linia99"}],
         "resolved_questions": [], "confidence": 0.8, "notes": ""}
@@ -265,10 +265,10 @@ check("creative przemianowany wszędzie, gdzie był",
 check("druga linia nietknięta (sugestia jej nie dotyczyła)", "linia9" in names, True)
 lp8 = {c.get("lpName") for pl in np["placements"] for a in pl["ads"]
        for c in a["creatives"] if c["name"] == "linia8-firmootwieracz"}
-check("LP linii ustawione na przemianowanym creative", lp8, {"linia8-firmootwieracz-GDN"})
+check("LP linii ustawione na przemianowanym creative", lp8, {"linia8-GDN-firmootwieracz"})
 check("metadane linii nadążyły za drzewem",
       (np["lines"][0]["creativeName"], np["lines"][0]["lpName"]),
-      ("linia8-firmootwieracz", "linia8-firmootwieracz-GDN"))
+      ("linia8-firmootwieracz", "linia8-GDN-firmootwieracz"))
 check("LP z obcym URL-em pominięte (dopasowanie po URL, nigdy po pozycji)",
       any("nie-ma-takiego" in n for n in notes), True)
 check("nazwy adów pominięte z wyjaśnieniem (rozbicie na formaty robi rdzeń)",
@@ -291,7 +291,7 @@ thin = A.apply_ops(multi, [op("delete_creative", placement=PL, ad=ADS[0],
 before = len(B.compute_tags(thin))
 np_thin, log_thin, _ = A.apply_suggestions(thin, {"lines": [
     {"lpUrl": "https://x/konto", "source": "GDN", "audience": "konto",
-     "lpName": "linia9-konto-GDN", "creativeName": "linia9-konto"}]})
+     "lpName": "linia9-GDN-konto", "creativeName": "linia9-konto"}]})
 check("linia o mniejszym pokryciu nie dostaje brakujących adów",
       len(B.compute_tags(np_thin)), before)
 check("ad, z którego linię usunięto, jej NIE odzyskał",
