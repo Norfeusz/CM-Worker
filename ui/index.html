@@ -506,7 +506,9 @@
           const data = await resp.json();
           if (data.error) fail(data.error);
           else if (data.suggestNewCampaign) { setSuggestData(data); setNote(''); setNoteErr(false); }
-          else { onResult(data); setNoteErr(false); setNote('Zbudowano propozycję ✓'); }
+          // `extra` obecne = przebudowa istniejącego zlecenia (zmiana kampanii, odpowiedzi
+          // o folderach) — taką da się cofnąć. Bez `extra` to nowe zlecenie od zera.
+          else { onResult(data, !!extra); setNoteErr(false); setNote('Zbudowano propozycję ✓'); }
         } catch (e) { fail('Nie udało się połączyć z serve.py: ' + e); }
         setBusy(false);
         if (onBusy) onBusy(null);
@@ -732,9 +734,40 @@
       // na planie policzonym dla INNEJ struktury — obejrzeć jeden plan, a zapisać coś
       // innego. Dlatego każda zmiana drzewa unieważnia plan i wymusza ponowny dry-run.
       const [planFresh, setPlanFresh] = useState(false);
-      // Wszystkie edycje struktury przechodzą przez `commit`, więc to jedyne miejsce,
-      // w którym trzeba unieważnić plan. Nowa operacja edycyjna dostaje to darmo.
-      const commit = np => { setP(np); setPlanFresh(false); };
+
+      // COFANIE — stos poprzednich stanów. Wpięte w `commit`, czyli w JEDYNY punkt,
+      // przez który przechodzą wszystkie edycje drzewa, więc obejmuje każdą operację
+      // (ręczną, drag&drop, agenta) i każdą przyszłą, bez pamiętania o niczym.
+      //
+      // Snapshot trzyma `answers` razem z drzewem, bo odpowiedzi na pytania sterują tym,
+      // co idzie do zapisu (`groups` filtruje placementy) — cofnięcie samego drzewa
+      // zostawiłoby je rozjechane.
+      //
+      // Stos jest ograniczony: propozycja z 45 adami to setki kB JSON-a, a nieograniczona
+      // historia rosłaby w nieskończoność przy dłuższej sesji.
+      const HISTORIA_MAX = 20;
+      const [history, setHistory] = useState([]);
+      const pushHistory = () => {
+        if (!p) return;
+        setHistory(h => [...h.slice(-(HISTORIA_MAX - 1)),
+                         { p: JSON.parse(JSON.stringify(p)), answers: { ...answers } }]);
+      };
+      const commit = np => { pushHistory(); setP(np); setPlanFresh(false); };
+
+      function undo() {
+        if (!history.length) return;
+        const last = history[history.length - 1];
+        setHistory(history.slice(0, -1));
+        setP(last.p);
+        setAnswers(last.answers);
+        setOrigLine(last.p && last.p.line ? { ...last.p.line } : null);
+        // po cofnięciu plan zapisu i diff agenta dotyczą już innej struktury
+        setPlanFresh(false);
+        setFoldersDirty(false);
+        setCommitRes(null);
+        setAiResult(null);
+        setAiNote('Cofnięto ostatnią zmianę');
+      }
 
       // JEDNO źródło prawdy o tym, że coś trwa. Każda operacja sieciowa przechodzi przez
       // `runBusy` albo raportuje przez `onBusy`, więc nie da się dodać nowej i zapomnieć
@@ -751,7 +784,11 @@
       // returns InputPanel's runAnalyze promise so callers can show their own progress
       const rebuildOn = extra => { setChangeCamp(false); setCommitRes(null); return rebuildRef.current(extra); };
       const [siteStruct, setSiteStruct] = useState(null);  // existing {placements:[{name,ads:[{name,creatives}]}]}
-      function loadProposal(np) {
+      // `undoable`: podmiana struktury, którą da się cofnąć (wynik agenta, przebudowa po
+      // odpowiedziach o folderach, zmiana kampanii). Świeża analiza i „Wyczyść" zaczynają
+      // od zera, więc historia poprzedniego zlecenia byłaby myląca — czyścimy ją.
+      function loadProposal(np, undoable) {
+        if (undoable) pushHistory(); else setHistory([]);
         setP(np);
         setAnswers(defaultsFor(np));
         setOrigLine(np && np.line ? { ...np.line } : null);
@@ -956,7 +993,9 @@
             const d = await resp.json();
             if (d.error) { setAiNote('Błąd: ' + d.error); return; }
             setAiResult(d);
-            if (d.proposal) loadProposal(d.proposal);
+            // cofalne: to najczęstszy powód, dla którego chce się wrócić — agent mógł
+            // zinterpretować uwagi inaczej, niż się oczekiwało
+            if (d.proposal) loadProposal(d.proposal, true);
             setRemarks('');
             setAiNote(`Agent zastosował ${d.applied} zmian`
               + (d.skipped ? `, pominął ${d.skipped}` : '')
@@ -997,7 +1036,7 @@
             const d = await resp.json();
             if (d.error) { setAiNote('Błąd: ' + d.error); return; }
             setAiResult(d);
-            if (d.proposal) loadProposal(d.proposal);
+            if (d.proposal) loadProposal(d.proposal, true);   // cofalne
             setAiNote(`Zastosowano ${d.applied} zmian`
               + (d.skipped ? `, pominięto ${d.skipped}` : '') + ' ✓');
           } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
@@ -1058,6 +1097,11 @@
             <div className="toolbar">
               <label className="btn">Wczytaj JSON
                 <input type="file" accept="application/json" style={{ display: 'none' }} onChange={loadFile} /></label>
+              <button className="btn" disabled={!history.length || !!pending} onClick={undo}
+                title={history.length
+                  ? `Cofnij ostatnią zmianę struktury (w pamięci: ${history.length})`
+                  : 'Nie ma czego cofać — struktura nie była zmieniana od zbudowania'}>
+                ↩ Cofnij{history.length > 1 ? ` (${history.length})` : ''}</button>
               <button className="btn" onClick={() => { loadProposal(null); setRemarks(''); setAiNote(''); }}>Wyczyść</button>
               <button className="btn" onClick={() => setShowJson(s => !s)}>{showJson ? 'Ukryj JSON' : 'Podgląd JSON'}</button>
               {/* Zatwierdzenie jest nieklikalne, dopóki plan jest aktualny — nie ma czego
