@@ -49,10 +49,13 @@ py scripts/serve.py        # backend stdlib (bez npm) — serwuje UI + całe API
 start http://127.0.0.1:8765/
 ```
 
-**Z warstwą AI: `start.bat`** (gitignorowany, user ma go u siebie; szablon to
-`start.example.bat`). Ustawia `N8N_STRUCTURE_URL`, `N8N_INTENT_URL`, `N8N_TOKEN` i startuje
-serwer w jednym — bo `set` obowiązuje tylko w bieżącym oknie, a `serve.py` musi wystartować
-w tym samym. **Zmienne czyta na starcie**, więc po edycji promptów w `ai_agents.py`
+**Normalnie uruchamiaj przez `start.bat`** (dwuklik) — gitignorowany, user ma go u siebie;
+szablon to `start.example.bat`. Ustawia `N8N_STRUCTURE_URL`, `N8N_INTENT_URL`, `N8N_TOKEN`,
+przestawia konsolę na UTF-8 (`chcp 65001`, inaczej polskie znaki się sypią) i startuje
+`py -u scripts\serve.py --open`. Flaga `--open` sprawia, że **serwer sam otwiera
+przeglądarkę** gdy zacznie nasłuchiwać — nie robi tego `.bat`, bo tylko serwer wie, kiedy
+gniazdo jest gotowe (opóźnienie w `.bat` było wyścigiem przy zimnym starcie).
+Zamknięcie okna konsoli zatrzymuje serwer. **Zmienne czyta na starcie**, więc po edycji promptów w `ai_agents.py`
 konieczny jest restart (moduł siedzi w pamięci procesu; objawia się identyczną odpowiedzią
 po poprawce).
 
@@ -60,8 +63,10 @@ po poprawce).
 jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkownika o dwuklik na
 `start.bat`; własny proces stawiaj tylko na czas konkretnej weryfikacji.
 Testy offline: `py tests/test_matcher.py`, `test_proposal.py`, `test_orchestrate.py`,
-`test_create_site.py`, `test_ai_agents.py` (131/131 zielone na dzień pisania tego pliku —
-uruchom je jako pierwszy krok, żeby potwierdzić, że nic się nie popsuło od ostatniej sesji).
+`test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py` (**277/277 zielone na
+05.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić, że nic się nie
+popsuło). Rozkład: matcher 45, proposal 58, orchestrate 39, create_site 15, ai_agents 97,
+export_tags 23.
 `test_ai_agents.py` stawia udawany webhook n8n na localhoście, więc testuje też transport
 i odrzucanie złych odpowiedzi — bez sieci i bez klucza API.
 
@@ -139,12 +144,24 @@ data/
   samples/                # przykładowe zipy klienta (gitignored — prawdziwe materiały, nie commitować)
   *.xls, proposal_demo.json  # artefakty robocze (gitignored)
 credentials/         # token OAuth + client_secret (GITIGNORED — nigdy nie commitować)
+ui/cubegroup-logo.svg  # oryginalny asset z motywu cubegroup.pl (wariant z białym napisem)
+node-env.ps1         # wymusza kolejność PATH dla Node w BIEŻĄCEJ sesji (patrz sekcja o Node)
+start.bat            # GITIGNORED (webhooki + token). Dwuklik = serwer + przeglądarka
+start.example.bat    # szablon dla nowego stanowiska
 ```
 
 ### Endpointy `scripts/serve.py` (GET serwuje też statyczne pliki z `ui/`)
-- `POST /api/build-proposal` — `{link, source, message, zipB64|zipPath, campaignId?, newCampaign?}` → kontrakt propozycji
-  (`campaignId` to override, gdy user ręcznie wybrał kampanię z przeglądarki zamiast auto-dopasowania;
-  `newCampaign` to nazwa kampanii do utworzenia — propozycja wraca z `campaign.status="new"`, `id=null`)
+- `POST /api/build-proposal` — `{link|links[], source, message, zipB64|zipPath, campaignId?,
+  newCampaign?, folderMap?}` → kontrakt propozycji.
+  `links[]` = kilka LP w jednym zleceniu (wszystkie do TEJ SAMEJ kampanii; różni advertiserzy
+  są odrzucani). `folderMap` = odpowiedzi usera „folder → który LP" (`"0"`/`"1"`/`"all"`),
+  echoowane w `lpFolders.override`, żeby UI nie trzymał własnego ukrytego stanu.
+  `campaignId` to override, gdy user ręcznie wybrał kampanię; `newCampaign` to nazwa nowej.
+- `POST /api/apply-suggestions` — `{proposal, suggestions}` → sugestie roli (a) tłumaczone na
+  operacje roli (b) i stosowane tym samym `apply_ops`, z jednym diffem. `notes` mówi, czego
+  **nie** przetłumaczono i dlaczego (`ad_naming` i `group_mappings` są celowo pomijane)
+- `GET /api/tags-file?name=` — pobranie wygenerowanego arkusza `.xls` z `data/`. Wpuszcza
+  wyłącznie `basename` z rozszerzeniem `.xls` (próby `../credentials/token.json` → 404)
 - `POST /api/refine` — `{proposal, answers, remarks}` → **Agent (b)**: uwagi → operacje z n8n →
   `ai_agents.apply_ops` stosuje je deterministycznie → `{proposal, log, applied, skipped, unclear}`
 - `POST /api/assist` — `{proposal}` → **Agent (a)**: podpowiedzi do struktury (`ai.request`
@@ -301,87 +318,79 @@ Nazwy Ad/Placement pochodzą z konwencji zip+source; linie/audience pochodzą z 
   `App.rebuildRef` trzyma `runAnalyze` z `InputPanel`, więc nie trzeba wpisywać danych ponownie)
 - ✅ Propozycja na *nowej* kampanii (nazwa z UI, prefill z resztą ścieżki URL) — plan zapisu
   z `CREATE campaign` sprawdzony w dry-run; realnego zapisu jeszcze nie robiliśmy
-- ✅ Okienko uwag → `/api/refine` (seam gotowy, AI jeszcze nie podłączone)
+- ✅ Okienko uwag → `/api/refine` (AI podłączone, obie role działają na żywym Gemini)
 - ✅ Repo na GitHub: **github.com/Norfeusz/CM-Worker** (prywatne)
 
-### Stan repo na koniec sesji 30.07.2026
-Cała praca tej sesji siedzi na gałęzi **`feat/campaign-site-and-ai-agents`** (wypchniętej),
-`main` jest nietknięty i stoi na initial commicie. **PR nie został jeszcze otwarty** —
-`gh` nie jest zainstalowany, więc user robi to kliknięciem:
+### Dorobek sesji 04–05.08.2026 (wszystko zweryfikowane na żywo)
+
+- ✅ **WIELE LP W JEDNYM ZLECENIU** — punkt 0 kolejki, ZROBIONY. `links[]` w API i pole na
+  kilka adresów w UI; `matcher.resolve_lines` (zamyka pułapkę `max_no+1`),
+  `lp_discriminators`, `match_folders_to_lps` (dopasowanie po zawieraniu **i po wspólnym
+  słowie**), eskalacja `lp_material_mapping`. **Orkiestrator nie wymagał ANI JEDNEJ zmiany**
+  — dowiedzione testem, nie założone.
+- ✅ **Format pliku konfigurowalny per źródło** — blok `fileFormats` w `source_map.json`:
+  `adSuffix` (ad `160x600_gif`), `placement` (gif→GIF, html→HTML, png→Display), `ignore`.
+  Format czytany ze **słów nazwy folderu**, bo PNG i JPG dają oba `type=image`. Świadomie
+  bez fallbacku na typ assetu — sufiks ma się pojawiać tylko gdy paczka sama rozdziela
+  formaty. **GDN domyślnie `adSuffix`**, co nadpisuje wcześniejszą konwencję osobnych
+  placementów (patrz sekcja „Decyzje… NIEZAIMPLEMENTOWANE" — ta pozycja jest już zrobiona).
+- ✅ **Nowa konwencja nazw** `linia{N}-{ŹRÓDŁO}[-{słowo}]` — osobna sekcja wyżej.
+- ✅ **Arkusz tagów 1:1 z CM360** — 452/452 używanych komórek ma identyczne formatowanie
+  (Arial 8pt, `#99CCFF`, ramki, zawijanie, scalenia, surowe szerokości BIFF, zamrożony
+  nagłówek, sekcja „Trafficking Instructions/Notes"). Nazwa:
+  `Tags_{kampania}_{advertiser}_{RRRR-MM-DD}.xls`.
+- ✅ **UI**: przyklejony nagłówek, jedno źródło prawdy o oczekiwaniu (`pending` + spinner
+  + opis „na co czekamy"), pytania o foldery zbierane zbiorczo i **jedno** przeładowanie,
+  „Wykonaj w CM360" w pasku z blokadą planu nieaktualnego, „⬇ Pobierz tagi”,
+  wyszarzanie nieklikalnych przycisków, **„↩ Cofnij"** (stos 20 snapshotów wpięty w
+  `commit`), identyfikacja Cube Group (Lexend, `#5172FF`, przyciski-pigułki) i ciemny motyw
+  (wszystkie kolory jako tokeny; kontrast policzony, nie „na oko").
+- ✅ **Launcher**: dwuklik `start.bat` stawia serwer i sam otwiera przeglądarkę
+  (flaga `--open` w `serve.py` — tylko serwer wie, kiedy gniazdo jest gotowe).
+- ✅ **Node naprawiony** — patrz sekcja o Node. Build React odblokowany.
+
+### Stan repo na koniec sesji 05.08.2026
+Gałąź **`feat/campaign-site-and-ai-agents`** (wypchnięta), `main` nietknięty na initial
+commicie. **PR nadal nieotwarty** — `gh` nie jest zainstalowany, user otwiera klikiem:
 `https://github.com/Norfeusz/CM-Worker/pull/new/feat/campaign-site-and-ai-agents`
 
-Commity (po granicach plików, bez rozcinania hunków): nowa kampania + Site → agenci AI →
-API i UI → dokumentacja → 4 poprawki z żywych testów. Working tree czysty.
-`start.bat` (adresy webhooków + token) jest gitignorowany i **nie ma go w historii** —
-sprawdzone. Przed każdym commitem skanuj repo na `cg-pl.app.n8n.cloud`, `sk-ant`, `AIza`.
+Working tree czysty. `start.bat` (adresy webhooków + token) jest gitignorowany i **nie ma
+go w historii** — sprawdzone. **Przed każdym commitem skanuj repo na `cg-pl.app.n8n.cloud`,
+`sk-ant`, `AIza` oraz na wartość `N8N_TOKEN` odczytaną z `start.bat`** (nie wpisuj jej do
+żadnego pliku w repo — nawet jako wzorca do wyszukiwania; ta pomyłka zdarzyła się raz i
+została wycofana przed commitem). Pliki `.bat` muszą mieć **CRLF** — przy samych LF `cmd` gubi
+znaki i linie `REM` wykonują się jako polecenia (kosztowało debugging).
 
-## Decyzje domenowe potwierdzone przez użytkownika, ale JESZCZE NIEZAIMPLEMENTOWANE
+## Foldery formatu w paczce — ZROBIONE (05.08.2026), ale konwencja się ZMIENIŁA
 
-**Foldery formatu w paczce GDN → osobne placementy.** Paczka podzielona na `GIF/`, `HTML/`,
-`PNG/` (każdy z podfolderami wymiarów) to **trzy różne placementy**, a mapowanie
-`GIF→GIF`, `HTML→HTML`, `PNG→Display` jest **ogólną regułą dla GDN** (potwierdzone
-30.07.2026). Każdy placement dostaje dokładnie te wymiary, które leżą w jego folderze.
+Wcześniej potwierdzono (30.07.2026): `GIF/`, `HTML/`, `PNG/` → **trzy osobne placementy**
+(`GIF→GIF`, `HTML→HTML`, `PNG→Display`). **05.08.2026 user poprosił o coś innego** dla
+realnej paczki `FRC, SPÓŁKA, KONTO - html_gif_png`: jeden placement `Display`, a format
+w **nazwie ada** (`160x600_gif`). Rozstrzygnięcie: **obie konwencje są zaimplementowane
+i wybieralne per źródło** blokiem `fileFormats` w `source_map.json`
+(`adSuffix` | `placement` | `ignore`).
 
-Dziś rdzeń deterministyczny tego NIE robi: `parse_zip._detect_groups` rozpoznaje foldery
-tylko z zamkniętej listy `GROUP_KEYWORDS` (`gdn`, `screening`, `facebook`, `karuzela`…), a
-`gif`/`html`/`png` tam nie ma — więc lądują jako **warianty**, a dla GDN `adKey="dimension"`
-ignoruje warianty, czyli 9 jednostek (3 wymiary × 3 formaty) zwija się do 3 adów i
-rozróżnienie formatów przepada w parserze. Rozbicie trzeba dziś zrobić uwagami do roli (b)
-(działa, sprawdzone na żywym Gemini: 14 operacji, 0 pominiętych).
+**GDN stoi domyślnie na `adSuffix`** — czyli na nowszym życzeniu, nie na starszym ustaleniu.
+Przełączenie to jedno słowo w configu: `"mode": "adSuffix"` → `"placement"`.
 
-**Użytkownik świadomie wstrzymał implementację** — chce najpierw potwierdzić na realnych
-paczkach, że agent radzi sobie z tym powtarzalnie. Docelowo to **wzorcowy przypadek dla
-`promote.py`**: zatwierdzona decyzja AI trafia do `source_map.json` (mapowanie
-folder→placement dla GDN) + rozszerzenie `GROUP_KEYWORDS`, i analogiczna paczka nie wymaga
-już modelu.
+Format czytany ze **słów nazwy folderu**, nie z typu assetu — `PNG` i `JPG` parsują się oba
+jako `image`, więc z typu ich nie rozróżnisz. Alias `jpg→png` jest w configu (życzenie usera:
+„przyjmij jpg jako png"). Świadomie **bez** fallbacku na typ assetu: sufiks ma się pojawiać
+tylko wtedy, gdy paczka sama rozdziela formaty folderami — inaczej dopisywałby `_html` do
+każdego ada zwyczajnej paczki jednoformatowej (ta pomyłka wyszła w testach).
+
+Nadal otwarte: `parse_zip` tworzy dla folderów HTML **równolegle** jednostki `html5` i
+`image` dla tych samych wymiarów (`HTML FRC`: 15 html5 + 30 image). Dziś nieszkodliwe, bo
+format bierzemy z nazwy folderu i jednostki zwijają się do tego samego ada. Zaboli, gdyby
+ktoś liczył jednostki albo brał typ z reprezentanta ada.
 
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
-0. **WIELE LP W JEDNYM ZLECENIU — najnowsze zadanie od użytkownika (30.07.2026), nietknięte.**
-
-   Dziś jedno zlecenie = **jeden link** = jedna linia (`/api/build-proposal` bierze `link`
-   jako string, `matcher.resolve_line` liczy jedną linię). Docelowo user chce wkleić **kilka
-   LP naraz** — wszystkie trafiają do **tej samej kampanii** — a narzędzie ma **samo
-   spróbować przypisać materiały do LP**, analizując link i nazwy folderów w zipie.
-
-   Przykład, o którym mówimy: zip z folderami `prospecting/` i `remarketing/` (albo
-   `slonce/`, `niebo/`) + dwa LP różniące się `utm_medium=prospecting` /
-   `utm_medium=remarketing`. Materiały z folderu mają wylądować na linii tego LP, którego
-   URL pasuje do nazwy folderu.
-
-   **Co już jest gotowe i nie trzeba tego pisać od nowa:**
-   - **Kształt wyjściowy istnieje i jest przetestowany.** Jeden Ad może nieść wiele creative,
-     a każdy creative może mieć **własny LP** (`creative.lpName` / `creative.lpUrl`).
-     Orkiestrator to obsługuje (`Orchestrator._lp_key`), tworzy każdy distinct LP i
-     rejestruje go w kampanii — pokryte testami w `test_orchestrate.py` (przypadek
-     `linia3-slonce` / `linia3-niebo` z osobnymi LP). **Ścieżki zapisu NIE trzeba ruszać.**
-   - **Rola (a) już wyciąga wiele linii z wiadomości** — `STRUCTURE_SCHEMA.lines` zwraca
-     listę `{lpUrl, source, audience, lpName, creativeName}` i na żywym Gemini działa
-     poprawnie (zweryfikowane: dwa LP prospecting/remarketing → dwie linie, prawidłowe
-     nazwy). Czyli inteligencja do interpretacji LP w dużej części istnieje.
-   - Konwencja nazw: patrz sekcja „Konwencja nazw LP i creative" niżej.
-
-   **Co trzeba dopisać:**
-   1. **Wejście**: `/api/build-proposal` musi przyjąć listę linków (np. `links: [...]`,
-      zachowując `link` dla zgodności) + pole w UI na kilka adresów (jeden na linię).
-   2. **Dopasowanie deterministyczne folder ↔ LP** — to sedno zadania i to ma być
-      rdzeń, nie AI. Sygnały: człony ścieżki i parametry query LP (`utm_medium`,
-      `utm_content`, `sprzedawca`) kontra nazwa folderu w zipie (`parse_zip` zwraca
-      `variant` = folder najwyższego poziomu i `group`). Normalizacja: lowercase, bez
-      polskich znaków, dopasowanie po zawieraniu w obie strony.
-   3. **Numeracja linii dla kilku LP naraz** — `matcher.resolve_line` woła się per LP na
-      **tej samej** liście LP kampanii; uwaga: dwa nowe LP w jednym zleceniu nie mogą
-      dostać tego samego numeru, a `resolve_line` liczy `max_no + 1` z *istniejących* LP,
-      więc trzeba dokładać już przydzielone w tej sesji. To realna pułapka.
-      `detect_line_conflict` też trzeba puścić per LP.
-   4. **Eskalacja przy niejednoznaczności** — gdy folderu nie da się przypisać (albo
-      pasuje do kilku LP), nowy kod eskalacji w `ai_fallback.escalations()` (np.
-      `lp_material_mapping`) i pytanie sterujące w UI. Dopasowania zatwierdzone przez
-      użytkownika są **kandydatem do promocji** przez `promote.py` (punkt 4 niżej).
-
-   **Uwaga na kolejność prac:** to zadanie i `promote.py` mocno się zazębiają. Sensowniej
-   zrobić najpierw dopasowanie deterministyczne + eskalację, a promocję dopiąć jako jeden
-   mechanizm dla wszystkich decyzji AI, niż budować promocję dwa razy.
+0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
+   kilka adresów w UI, `matcher.resolve_lines` / `lp_discriminators` /
+   `match_folders_to_lps`, eskalacja `lp_material_mapping`, pytania o foldery zbierane
+   zbiorczo z jednym przeładowaniem. Orkiestrator nie wymagał zmian (dowiedzione testem).
+   Zweryfikowane na żywym koncie i na realnej paczce klienta (45 adów, 102 tagi).
 
 1. **Tworzenie nowej kampanii — ZAIMPLEMENTOWANE, ale NIGDY NIE URUCHOMIONE NA ŻYWO.**
    `cm_write.campaign()` + gałąź `campaign.status=="new"` w orkiestratorze + `newCampaign`
@@ -426,13 +435,39 @@ już modelu.
    user powiedział że narazie nie trzeba).
 9. **Build React — ODBLOKOWANY** (Node 24 + npm 11 działają, patrz sekcja o Node wyżej).
    Nie jest to migracja: UI już jest React 18, chodzi o dodanie builda i rozbicie
-   `ui/index.html` na komponenty. **Niższy priorytet niż uwagi do wyglądu/użyteczności** —
-   te przenoszą się do builda bez zmian, więc nie ma sensu na niego czekać.
-10. **Uwagi użytkownika do wyglądu i użyteczności UI** (zgłoszone 04.08.2026, nierobione):
-   górny pasek przyklejony do krawędzi ekranu (sticky header), wyraźniejsza informacja że
-   coś się przetwarza. User miał podać pełną listę — dopytaj o resztę przed startem.
+   `ui/index.html` (**1500+ linii**) na komponenty. Niższy priorytet niż użyteczność, ale
+   plik jest już na granicy wygodnej pracy — to najmocniejszy argument, żeby to zrobić.
+10. ~~Uwagi do wyglądu i użyteczności UI~~ — **ZROBIONE 05.08.2026** (sticky header,
+   wskaźnik pracy, cofanie, styl Cube Group, ciemny motyw, pobieranie tagów, wyszarzanie).
 11. Oznaczać, **po którym LP nastąpiło automatyczne dopasowanie kampanii** (user zgłosił
-   04.08.2026, świadomie odłożone na potem).
+   04.08.2026, świadomie odłożone na potem). **NADAL NIEROBIONE.**
+12. **Etykieta z `utm_campaign` bywa za długa.** Przy kolizji z istniejącym LP etykieta jest
+    wyprowadzana z różnicy adresów, więc dla `utm_campaign=refinansowanie2026` wychodzi
+    `linia2-GDN-refinansowanie2026`, a user wolał `refinans`. Do rozważenia: skracanie do
+    pierwszego członu przed cyframi. **User to zgłosił, ja zaproponowałem — nie było
+    decyzji.**
+13. **Cofanie nie ma „ponów" (redo)** ani skrótu Ctrl+Z. Świadomie minimalny zakres.
+
+## HANDOFF — pierwsze kroki w nowej sesji
+
+1. `py tests/test_matcher.py` … i pozostałe pięć plików. **Musi być 277/277.** Jeśli nie —
+   zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+2. Serwer: poproś usera o **dwuklik `start.bat`** (stawia serwer i otwiera przeglądarkę).
+   **Nie stawiaj `serve.py` jako swojego zadania w tle na stałe** — jego czas życia jest
+   powiązany z sesją agenta, padł już wielokrotnie. Własny proces tylko na czas konkretnej
+   weryfikacji, i pamiętaj, że **restart jest konieczny po każdej zmianie w Pythonie**
+   (moduły siedzą w pamięci procesu).
+3. Gałąź `feat/campaign-site-and-ai-agents`, PR nieotwarty. Working tree powinien być czysty.
+4. **Zmiany w promptach agentów wymagają jednego przebiegu na ŻYWYM modelu.** Dwie takie
+   zmiany czekają na weryfikację i to jest najbliższy priorytet techniczny:
+   - nowa konwencja nazw `linia{N}-{ŹRÓDŁO}[-{słowo}]` w prompcie roli (b),
+   - nowa operacja `rename_creative_all` (model musi ją WYBIERAĆ zamiast
+     `apply_creative_to_all` przy zmianie nazwy linii).
+   Atrapa webhooka w testach tego nie wyłapie — jej odpowiedzi pisze się pod własne
+   założenia. Blokada w `apply_ops` chroni niezależnie od tego, ale sam wybór operacji
+   potwierdzi tylko żywy test.
+5. Największa zaległość merytoryczna to wciąż **`promote.py`** (punkt 4) — bez niego AI jest
+   kosztem stałym, nie jednorazowym.
 
 ## Styl pracy z tym użytkownikiem (Norbert)
 
