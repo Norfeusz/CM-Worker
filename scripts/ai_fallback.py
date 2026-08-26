@@ -64,6 +64,27 @@ def escalations(parsed, proposal, message="", advertiser_rule=True):
     return out
 
 
+def dimensions_by_folder(parsed):
+    """{folder/grupa: {zestaw: [wymiary]}} — co REALNIE leży w każdym folderze paczki.
+
+    Grupa to źródło albo folder formatu (`GDN`, `afiliacja`, `Screening`), zestaw to
+    `KV1`/`KV3`/`1`/`2` z folderów zestawów; `-` gdy któregoś wymiaru nie ma. Agent
+    dostaje to gotowe, bo z płaskiej listy wymiarów całego zipa nie da się odtworzyć,
+    które należą do której paczki — a nazwy adów muszą brać wymiary z TEGO folderu,
+    o którym mówi uwaga.
+    """
+    out = {}
+    for u in parsed.get("units", []):
+        if not u.get("dimension"):
+            continue
+        g = u.get("group") or u.get("variant") or "-"
+        s = u.get("set_index") or "-"
+        dims = out.setdefault(g, {}).setdefault(s, [])
+        if u["dimension"] not in dims:
+            dims.append(u["dimension"])
+    return {g: {s: sorted(d) for s, d in sets.items()} for g, sets in out.items()}
+
+
 def build_request(parsed, proposal, message, advertiser_list=None):
     """Structured payload handed to the AI Agent (n8n). Kept small + explicit."""
     return {
@@ -82,7 +103,14 @@ def build_request(parsed, proposal, message, advertiser_list=None):
             "format_hint": parsed.get("format_hint"),
             "groups": parsed.get("groups"),
             "dimensions": parsed.get("dimensions"),
-            "units": [{k: u.get(k) for k in ("dimension", "variant", "card_index", "type", "group")}
+            # WYMIARY PER FOLDER/ZESTAW — bez tego agent widzi tylko wspólną listę
+            # wymiarów całego zipa i przy uwadze „ady wg schematu {wymiar}_KV#" musi
+            # zgadywać, które wymiary są w którym folderze. Realny błąd: wziął wymiary
+            # z paczki innego źródła (patrz studium przypadku KV1/KV3 w
+            # data/training_examples.md).
+            "by_folder": dimensions_by_folder(parsed),
+            "units": [{k: u.get(k) for k in ("dimension", "variant", "card_index", "type",
+                                             "group", "set_index", "package")}
                       for u in parsed.get("units", [])],
         },
         "current_proposal": {

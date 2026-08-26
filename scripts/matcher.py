@@ -244,6 +244,23 @@ def lp_label(tokens, fallback=None):
         normalize(fallback) if fallback and _readable(normalize(fallback)) else None)
 
 
+def keyword_label(text):
+    """The label from a keyword the USER typed for a landing page ("lookalike").
+
+    Kept as typed apart from what would break a CM360 name or the naming convention:
+    whitespace becomes a single '-', anything that is neither alphanumeric nor '-'/'_'
+    is dropped. Deliberately NOT put through `normalize`, which lowercases and strips
+    Polish diacritics — those are fine in a name the user chose themselves, and the
+    automatic labels are the only ones that need a comparison form.
+
+    Returns None for an empty/garbage keyword, so callers can treat "no keyword" and
+    "keyword of punctuation" the same way.
+    """
+    t = re.sub(r"\s+", "-", (text or "").strip())
+    t = "".join(ch for ch in t if ch.isalnum() or ch in "-_").strip("-_")
+    return t or None
+
+
 def _words(text):
     """Significant words of a name, for comparing a folder against a URL token."""
     return {w for w in normalize(text).split("_") if len(w) >= MIN_TOKEN}
@@ -307,7 +324,45 @@ def unresolved_lp_folders(folder_match, n_lines):
     return out
 
 
-def resolve_lines(urls, anchor, source, existing_lps, labels=None):
+def _by_index(values, n):
+    """A per-address list from either a list (short ones are padded) or a dict by index."""
+    if isinstance(values, dict):
+        return [values.get(i, values.get(str(i))) for i in range(n)]
+    values = list(values or [])
+    return [values[i] if i < len(values) else None for i in range(n)]
+
+
+def dedupe_links(urls, keywords=None, sources=None):
+    """(unique rows, {index: keyword}, {index: source}) for one order — the shape
+    everything downstream is keyed by.
+
+    Must happen BEFORE folder matching and `resolve_lines`, because both key their
+    per-landing-page data by position: collapsing a repeated address later would shift
+    every keyword and folder label by one and silently label the wrong page.
+
+    A row is (address, source), not just the address: the SAME address under two sources
+    is two landing pages (`linia1-GDN` + `linia1-Programmatic`), because the source is
+    part of an LP name. A truly repeated row keeps whichever keyword was given for it.
+    """
+    urls = list(urls or [])
+    kws = _by_index(keywords, len(urls))
+    srcs = _by_index(sources, len(urls))
+    seen = {}
+    for i, u in enumerate(urls):
+        u = (u or "").strip()
+        if not u:
+            continue
+        kw = kws[i].strip() if isinstance(kws[i], str) else None
+        src = srcs[i].strip() if isinstance(srcs[i], str) else None
+        key = (u, src)
+        seen[key] = seen.get(key) or kw or None
+    return ([u for u, _ in seen],
+            {i: kw for i, kw in enumerate(seen.values()) if kw},
+            {i: src for i, (_, src) in enumerate(seen) if src})
+
+
+def resolve_lines(urls, anchor, source, existing_lps, labels=None, keywords=None,
+                  sources=None):
     """Resolve SEVERAL links added to the same campaign in one order.
 
     `resolve_line` cannot be called in a plain loop for this: it derives the next
@@ -322,18 +377,51 @@ def resolve_lines(urls, anchor, source, existing_lps, labels=None):
 
     labels: optional {index: fallback_label} used when a url carries no readable
     discriminator of its own (e.g. the name of the zip folder matched to it).
+    keywords: optional {index: keyword} typed by the user for that landing page. A
+    keyword BEATS every automatic label and is always applied, even for a single link
+    with nothing to be distinguished from — the user naming a page is not a guess that
+    needs corroborating. It is also the only way to get a short label out of a long
+    tracking value (`utm_campaign=refinansowanie2026` -> `refinans`).
+
+    sources: optional {index: source token} — one order may cover SEVERAL sources
+    (a package with `GDN/` and `Programmatic/` folders), and the source is part of an LP
+    name, so each source needs its own landing page: `linia1-GDN` + `linia1-Programmatic`,
+    same number, usually the same page with different tracking parameters. Entries that
+    share a number but differ in source need NO label — the source segment already tells
+    them apart.
+
+    All three dicts are keyed by position in `urls`, so callers must pass them aligned
+    with the list they hand in here (duplicate entries collapse below, which would shift
+    positions — dedupe upstream if you build the dicts yourself).
     """
-    urls = list(dict.fromkeys(u for u in urls if u))       # identical links = one LP
-    discs = lp_discriminators(urls, anchor)
     labels = labels or {}
+    keywords = {int(i): keyword_label(k) for i, k in (keywords or {}).items()
+                if keyword_label(k)}
+    src_by_idx = {int(i): s for i, s in (sources or {}).items() if s}
+    # identyczny (adres, źródło) = jedno LP; TEN SAM adres pod DWOMA źródłami to dwa LP
+    ent, seen_ent = [], set()
+    for i, u in enumerate(urls or []):
+        if not u:
+            continue
+        tok = src_by_idx.get(i, source)
+        if (u, tok) in seen_ent:
+            continue
+        seen_ent.add((u, tok))
+        ent.append({"url": u, "src": tok, "label0": labels.get(i),
+                    "kw": keywords.get(i)})
+    discs = lp_discriminators([e["url"] for e in ent], anchor)
     existing_by_name = {lp.get("lpName"): lp.get("lpUrl", "") or ""
                         for lp in (existing_lps or [])}
-    existing_by_url = {lp.get("lpUrl"): lp.get("lpName")
-                       for lp in (existing_lps or []) if lp.get("lpUrl")}
+    # url -> nazwy LP, jakie już na nim wiszą; wybór między nimi zależy od ŹRÓDŁA wpisu
+    existing_by_url = {}
+    for lp in (existing_lps or []):
+        if lp.get("lpUrl"):
+            existing_by_url.setdefault(lp["lpUrl"], []).append(lp.get("lpName"))
 
     taken, path_no, lines = set(), {}, []
-    for i, (url, disc) in enumerate(zip(urls, discs)):
-        line = resolve_line(url, anchor, source, existing_lps)
+    for i, (e, disc) in enumerate(zip(ent, discs)):
+        url, tok = e["url"], e["src"]
+        line = resolve_line(url, anchor, tok, existing_lps)
         key = (line["path"] or "").lower()
         if line["reused"]:
             no = line["lineNumber"]
@@ -345,19 +433,32 @@ def resolve_lines(urls, anchor, source, existing_lps, labels=None):
                 no += 1
         taken.add(no)
         path_no.setdefault(key, no)
-        line.update({"lineNumber": no, "url": url,
-                     "label": lp_label(disc, labels.get(i))})
+        line.update({"lineNumber": no, "url": url, "source": tok,
+                     "keyword": e["kw"],
+                     "label": e["kw"] or lp_label(disc, e["label0"])})
         lines.append(line)
 
-    shared_no = {l["lineNumber"] for l in lines
-                 if sum(1 for x in lines if x["lineNumber"] == l["lineNumber"]) > 1}
+    # rodzeństwo do rozróżnienia etykietą to wpisy o TYM SAMYM numerze I TYM SAMYM
+    # źródle — różne źródła są już rozróżnione segmentem źródła w nazwie
+    shared_no = {(l["lineNumber"], l["source"]) for l in lines
+                 if sum(1 for x in lines if x["lineNumber"] == l["lineNumber"]
+                        and x["source"] == l["source"]) > 1}
     for l in lines:
-        no = l["lineNumber"]
+        no, tok = l["lineNumber"], l["source"]
         # this exact url is already a landing page here: keep its name instead of
-        # minting a second LP for the same address under a labelled name
-        if l["url"] in existing_by_url:
-            name = existing_by_url[l["url"]]
+        # minting a second LP for the same address under a labelled name. Only an LP of
+        # the SAME source counts — pod innym źródłem ten sam adres to inne LP
+        # (`linia2-GDN` obok `linia2-Programmatic`), bo źródło jest częścią nazwy.
+        same_src = next((n for n in existing_by_url.get(l["url"], [])
+                         if ((split_lp_name(n) or (None, None, None))[1] or "").lower()
+                         == (tok or "").lower()), None)
+        if same_src:
+            name = same_src
             l["lpName"] = name
+            # A keyword cannot rename it: `_ensure_lp` resolves by NAME, so a renamed
+            # landing page would be created as a second LP for the same address. Say so
+            # instead of dropping the keyword silently.
+            l["keywordIgnored"] = bool(l.get("keyword"))
             # creative bierze etykietę z istniejącej nazwy LP, a nie przez obcięcie
             # źródła z końca — po zmianie kolejności źródło stoi w ŚRODKU
             parsed = split_lp_name(name)
@@ -368,7 +469,7 @@ def resolve_lines(urls, anchor, source, existing_lps, labels=None):
         # label the LP when siblings share the number, or when the plain name is
         # already taken in the campaign by a DIFFERENT url — `_ensure_lp` resolves
         # by name, so a silent collision would point creatives at the wrong page.
-        plain = lp_name(no, source)
+        plain = lp_name(no, tok)
         clash_url = existing_by_name.get(plain)
         collides = clash_url is not None and clash_url != l["url"]
         label = l["label"]
@@ -383,9 +484,12 @@ def resolve_lines(urls, anchor, source, existing_lps, labels=None):
             # gdy token jest nieczytelny (same cyfry), bierzemy go i tak: brzydka, ale
             # ODRĘBNA nazwa jest lepsza niż cicha kolizja z cudzym LP
             label = lp_label(toks) or next((t for t in toks if t), None)
-        needs = (no in shared_no or collides) and bool(label)
+        # a keyword is an instruction, not a hint: apply it without asking whether the
+        # name needs distinguishing (single link, no collision -> still labelled)
+        needs = bool(l.get("keyword")) or (((no, tok) in shared_no or collides)
+                                           and bool(label))
         l["label"] = label
-        l["lpName"] = lp_name(no, source, label if needs else None)
+        l["lpName"] = lp_name(no, tok, label if needs else None)
         l["creativeName"] = creative_name(no, label if needs else None)
         l["labelled"] = needs
     return lines

@@ -258,5 +258,162 @@ check("pytanie ma id per folder i opcję „wszystkie LP”",
       (qs[0]["id"], [o["value"] for o in qs[0]["options"]], qs[0]["default"]),
       ("lp_folder:screening", ["0", "1", "all"], "all"))
 
+print("\npaczka Meta z DWOMA folderami formatu (statyki/ + karuzela/) — realne zgłoszenie:")
+# Zgłoszone: „z tej paczki narzędzie tworzy 2 placementy — karuzela". Przyczyna: `karuzela`
+# jest w GROUP_KEYWORDS parsera, więc trafia do `groups`, a `statyki` nie — wpada do
+# resztek, których nazwę brano z format_hint CAŁEGO zipa (a ten to „Karuzela", bo słowo
+# występuje w nazwach plików). Drugi placement brał surową nazwę folderu, stąd „karuzela"
+# małą literą. Teraz nazwę daje folder danej porcji materiałów przez placementByFormat.
+def _um(dim, folder, card, grp=None):
+    return {"dimension": dim, "variant": folder, "card_index": card, "type": "image",
+            "packaged": False, "source_path": f"pack/{folder}", "group": grp}
+
+
+PARSED_META = {"format_hint": "Karuzela", "warnings": [], "groups": [
+    {"name": "karuzela", "source_hint": None, "n_entries": 4}], "units": [
+        _um(None, "karuzela", "1", "karuzela"), _um(None, "karuzela", "2", "karuzela"),
+        _um("1200x628", "statyki", "1"), _um("1200x628", "statyki", "2"),
+        _um("1080x1920", "statyki", "1")]}
+META_LINE = {"lineNumber": 3, "lpName": "linia3-FB-lookalike", "source": "FB",
+             "path": "x", "reused": False, "creativeName": "linia3-lookalike"}
+pmeta = B.build_proposal("Meta", PARSED_META, camp, META_LINE)
+check("dwa RÓŻNE placementy, nazwane wg folderów",
+      sorted(pl["name"] for pl in pmeta["placements"]), ["Karuzela", "Statyki"])
+check("folder formatu tego samego źródła nie udaje obcego źródła",
+      {pl["source"] for pl in pmeta["placements"]}, {"Meta"})
+check("oba na Site źródła", {pl["site"] for pl in pmeta["placements"]}, {"CG_Facebook"})
+by_name = {pl["name"]: pl for pl in pmeta["placements"]}
+check("statyki mają swoje wymiary, a nie karty karuzeli",
+      sorted(a["name"] for a in by_name["Statyki"]["ads"]),
+      ["statyki_1080x1920_1", "statyki_1200x628_1", "statyki_1200x628_2"])
+check("karuzela ma karty", sorted(a["name"] for a in by_name["Karuzela"]["ads"]),
+      ["karuzela_1", "karuzela_2"])
+check("5 tagów = 5 adów × 1 linia", len(pmeta["tags"]), 5)
+# folder formatu tego źródła to nie „które źródło kodujemy" — pytanie o grupy odpada,
+# a placement nie ma grupy, po której UI mogłoby go ukryć (domyślna odpowiedź na to
+# pytanie zaznaczała tylko PIERWSZĄ grupę, więc druga wypadała z drzewa bez słowa)
+check("brak pytania o grupy, gdy folder jest formatem źródła",
+      [q["id"] for q in pmeta["questions"]], [])
+check("placement z folderu formatu nie ma grupy do filtrowania",
+      {pl["group"] for pl in pmeta["placements"]}, {None})
+PARSED_FOREIGN = dict(PARSED_META, groups=[
+    {"name": "karuzela", "source_hint": None, "n_entries": 2},
+    {"name": "screening", "source_hint": None, "n_entries": 1}],
+    units=PARSED_META["units"] + [_um("300x250", "screening", "1", "screening")])
+qf = B.build_proposal("Meta", PARSED_FOREIGN, camp, META_LINE)["questions"]
+check("obcy folder (screening) nadal wymaga decyzji — i tylko on",
+      [(q["id"], [o["value"] for o in q["options"]]) for q in qf],
+      [("groups", ["screening"])])
+
+# nieznany folder resztek zostaje przy nazwie z format_hint — bez tego każda nietypowa
+# nazwa folderu robiłaby własny placement
+PARSED_UNK = dict(PARSED_META, groups=[], units=[_um("1200x628", "cokolwiek", "1")])
+check("folder, którego źródło nie zna jako formatu -> nazwa z format_hint",
+      [pl["name"] for pl in B.build_proposal("Meta", PARSED_UNK, camp, META_LINE)["placements"]],
+      ["Karuzela"])
+
+# folder przypisany do LANDING PAGE nie tworzy placementu, nawet gdy nazywa się jak format
+pmeta_lp = B.build_proposal("Meta", PARSED_UNK, camp, META_LINE,
+                            folder_match={"map": {"cokolwiek": 0}, "consumed": ["cokolwiek"]})
+check("folder zużyty jako rozróżnienie LP nie dzieli placementów",
+      [pl["name"] for pl in pmeta_lp["placements"]], ["Karuzela"])
+PARSED_LPFMT = dict(PARSED_META, groups=[], units=[_um("1200x628", "statyki", "1")])
+check("...także wtedy, gdy jego nazwa JEST formatem znanym źródłu",
+      [pl["name"] for pl in B.build_proposal(
+          "Meta", PARSED_LPFMT, camp, META_LINE,
+          folder_match={"map": {"statyki": 0}, "consumed": ["statyki"]})["placements"]],
+      ["Karuzela"])
+
+print("\nKILKA ŹRÓDEŁ w jednym zleceniu (paczka z folderami GDN/ + Programmatic/):")
+PARSED_2SRC = {"format_hint": "Display", "warnings": [], "groups": [
+    {"name": "GDN", "source_hint": "GDN", "n_entries": 2},
+    {"name": "Programmatic", "source_hint": "Programmatic", "n_entries": 2}], "units": [
+        _u("300x250", "GDN", "GDN"), _u("160x600", "GDN", "GDN"),
+        _u("300x250", "Programmatic", "Programmatic"),
+        _u("970x250", "Programmatic", "Programmatic")]}
+# jedna strona docelowa, LP na każde źródło — ten sam numer linii, inny sufiks
+LINES_2SRC = [
+    {"lineNumber": 1, "lpName": "linia1-GDN", "creativeName": "linia1", "source": "GDN",
+     "path": "a", "reused": False, "url": "https://x/a?utm_source=gdn"},
+    {"lineNumber": 1, "lpName": "linia1-Programmatic", "creativeName": "linia1",
+     "source": "Programmatic", "path": "a", "reused": False,
+     "url": "https://x/a?utm_source=programmatic"},
+]
+p2 = B.build_proposal("GDN", PARSED_2SRC, camp, lines=LINES_2SRC,
+                      sources=["GDN", "Programmatic"])
+check("każde źródło ma swój placement na SWOIM Site",
+      [(pl["name"], pl["site"], pl["source"]) for pl in p2["placements"]],
+      [("Display", "CG_GDN", "GDN"), ("Display", "CG_Programmatic", "Programmatic")])
+check("lista Site zlecenia, główne pierwsze",
+      [s["name"] for s in p2["sites"]], ["CG_GDN", "CG_Programmatic"])
+check("źródło główne zostaje w `source`, wszystkie w `sources`",
+      (p2["source"], p2["sources"]), ("GDN", ["GDN", "Programmatic"]))
+check("wybrane źródło nie jest już „obcą grupą” — zero pytań",
+      [q["id"] for q in p2["questions"]], [])
+check("ady rozdzielone po źródłach (Programmatic ma swoje wymiary)",
+      [sorted(a["name"] for a in pl["ads"]) for pl in p2["placements"]],
+      [["160x600", "300x250"], ["300x250", "970x250"]])
+# to jest sedno: creative na placemencie GDN klika w LP GDN, nie w LP programmatic
+check("creative bierze LP swojego źródła",
+      [[(c["name"], c["lpName"]) for a in pl["ads"] for c in a["creatives"]]
+       for pl in p2["placements"]],
+      [[("linia1", "linia1-GDN"), ("linia1", "linia1-GDN")],
+       [("linia1", "linia1-Programmatic"), ("linia1", "linia1-Programmatic")]])
+check("po jednym creative na ad — LP drugiego źródła się nie doklejają",
+      {len(a["creatives"]) for pl in p2["placements"] for a in pl["ads"]}, {1})
+check("4 tagi = 4 ady × 1 creative", len(p2["tags"]), 4)
+check("tag niesie Site swojego źródła",
+      sorted({t["site"] for t in p2["tags"]}), ["CG_GDN", "CG_Programmatic"])
+# materiały spoza folderów źródeł należą do źródła GŁÓWNEGO
+PARSED_LEFT = dict(PARSED_2SRC, units=PARSED_2SRC["units"] + [_u("750x200", "inne", None)])
+check("resztki poza folderami źródeł idą na Site źródła głównego",
+      [(pl["name"], pl["site"]) for pl in B.build_proposal(
+          "GDN", PARSED_LEFT, camp, lines=LINES_2SRC,
+          sources=["GDN", "Programmatic"])["placements"]],
+      [("Display", "CG_GDN"), ("Display", "CG_Programmatic")])
+# bez zaznaczenia drugiego źródła zachowanie jak dotąd: obcy folder = pytanie
+p1 = B.build_proposal("GDN", PARSED_2SRC, camp, lines=LINES_2SRC[:1])
+check("niewybrane źródło zostaje decyzją użytkownika",
+      [(q["id"], [o["value"] for o in q["options"]]) for q in p1["questions"]],
+      [("groups", ["Programmatic"])])
+check("...i ląduje na Site źródła głównego, jak przed zmianą",
+      sorted({pl["site"] for pl in p1["placements"]}), ["CG_GDN"])
+
+print("\nZESTAWY MATERIAŁÓW `linia1/` + `linia2/` — jedno LP, rozróżnienie na adzie:")
+# Ustalone z użytkownikiem: te foldery NIE są stronami docelowymi. Wcześniej parser
+# zwijał oba komplety w jeden ad (ta sama nazwa, ten sam wariant) i połowa materiałów
+# przepadała bez śladu.
+def _us(dim, folder, sset):
+    return {"dimension": dim, "variant": folder, "card_index": None, "set_index": sset,
+            "type": "html5", "packaged": False,
+            "source_path": f"{folder}/linia{sset}/banner_{dim}", "group": folder}
+
+
+PARSED_SETS = {"format_hint": "Display", "warnings": [], "groups": [
+    {"name": "GDN", "source_hint": "GDN", "n_entries": 4}], "units": [
+        _us("300x250", "GDN", "1"), _us("300x250", "GDN", "2"),
+        _us("160x600", "GDN", "1"), _us("160x600", "GDN", "2")]}
+psets = B.build_proposal("GDN", PARSED_SETS, camp, lines=LINES_2SRC[:1], sources=["GDN"])
+check("każdy zestaw ma swój ad, oba pod jednym LP",
+      [a["name"] for a in psets["placements"][0]["ads"]],
+      ["160x600_1", "160x600_2", "300x250_1", "300x250_2"])
+check("...i każdy z tą samą jedną linią",
+      {c["name"] for a in psets["placements"][0]["ads"] for c in a["creatives"]},
+      {"linia1"})
+check("4 tagi, nie 2 — nic się nie zwija", len(psets["tags"]), 4)
+check("bez folderów zestawów nazwy adów zostają bez sufiksu",
+      [a["name"] for a in B.build_proposal("GDN", dict(PARSED_SETS, units=[
+          _u("300x250", "GDN", "GDN")]), camp,
+          lines=LINES_2SRC[:1])["placements"][0]["ads"]], ["300x250"])
+
+print("\nskrót źródła w nazwie LP (config, nie zaszyty w kodzie):")
+check("Facebook -> FB", B.lp_source("Facebook"), "FB")
+check("Meta (alias tego samego Site) -> ten sam skrót", B.lp_source("Meta"), "FB")
+check("źródło bez skrótu zostaje jak jest", B.lp_source("GDN"), "GDN")
+check("nieznane źródło nie wybucha", B.lp_source("CośNowego"), "CośNowego")
+check("skrót + słowo klucza dają nazwę ze zlecenia",
+      M.lp_name(3, B.lp_source("Facebook"), M.keyword_label("lookalike")),
+      "linia3-FB-lookalike")
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

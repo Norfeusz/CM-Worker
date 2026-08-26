@@ -32,6 +32,19 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_MAP = os.path.join(BASE, "config", "source_map.json")
 
 
+def lp_source(source, source_map=None):
+    """The token that stands for the source INSIDE a landing page name (`linia3-FB`).
+
+    Separate from the source key itself, because the account uses short forms in names
+    (`linia1-FB`, `linia2-GDN`) while the config keys are spelled out (`Facebook`,
+    `Meta` — two keys, one Site, one name token). Keeping them apart also fixes
+    `detect_line_conflict`, which reads the source back OUT of an existing LP name and
+    compared `Facebook` with `FB` — a comparison that could never match.
+    """
+    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    return (source_map.get(source) or {}).get("lpSource") or source
+
+
 def _ad_name(unit, ad_key):
     if ad_key == "variant":
         return unit.get("variant") or unit.get("dimension") or "?"
@@ -49,17 +62,30 @@ def _status(name, container):
 
 
 def build_questions(parsed, line_conflict=None, chosen_source=None, folder_match=None,
-                    lines=None):
+                    lines=None, source_map=None, sources=None, line_addresses=None):
     """Decision points to surface in the UI before/while building the tree."""
     q = []
+    src_conf = ((source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"])
+                .get(chosen_source) or {})
+    selected = selected_sources(chosen_source, sources) if chosen_source else []
     lns = lines or []
-    # a folder already used to tell landing pages apart is settled — do not also ask
-    # about it as a source/format group
+    # Pytamy o ADRESY, nie o wpisy linii: przy kilku źródłach jeden adres ma wpis na
+    # każde źródło, a odpowiedź „folder -> ta strona” dotyczy adresu (tak też keyowany
+    # jest `folderMap` po stronie serwera).
+    addr_of = list(line_addresses or range(len(lns)))
+    addr_first = {}
+    for j, a in enumerate(addr_of):
+        addr_first.setdefault(a, j)
     consumed = set((folder_match or {}).get("consumed") or [])
-    for prob in matcher.unresolved_lp_folders(folder_match, len(lns)):
+    for prob in matcher.unresolved_lp_folders(folder_match, len(addr_first)):
         f = prob["folder"]
-        opts = [{"value": str(i), "label": f"{l['creativeName']} → {l['lpName']}"}
-                for i, l in enumerate(lns)]
+        # przy kilku źródłach nazwa LP nie identyfikuje adresu (jest ich kilka na adres),
+        # więc etykietą jest wtedy sam adres
+        per_source = len(addr_first) != len(lns)
+        opts = [{"value": str(a),
+                 "label": (f"{lns[j]['creativeName']} → {lns[j]['url']}" if per_source
+                           else f"{lns[j]['creativeName']} → {lns[j]['lpName']}")}
+                for a, j in sorted(addr_first.items())]
         opts.append({"value": "all", "label": "wszystkie LP (te same materiały pod każdą stronę)"})
         q.append({
             "id": f"lp_folder:{f}", "type": "single_choice", "rebuild": True,
@@ -69,17 +95,30 @@ def build_questions(parsed, line_conflict=None, chosen_source=None, folder_match
                      if prob["candidates"] else
                      "Pozostałe foldery udało się przypisać do LP, tego nie — sprawdź."),
         })
-    groups = [g for g in (parsed.get("groups") or []) if g["name"] not in consumed]
+    # A folder that names a FORMAT of the chosen source (Meta: `karuzela/`, `statyki/`)
+    # is not a decision — it gets its own placement and is coded either way. Asking would
+    # be worse than noise: the answer FILTERS the tree and its default ticks only the
+    # first group, so a package of `karuzela/` + `posty/` would silently drop one.
+    # Ani o folder ŹRÓDŁA, które user wybrał: skoro je wybrał, kodujemy je — a odpowiedź
+    # na to pytanie FILTRUJE drzewo i domyślnie zaznacza tylko pierwszą grupę, więc
+    # paczka `GDN/` + `Programmatic/` gubiła drugie źródło bez słowa.
+    groups = [g for g in (parsed.get("groups") or [])
+              if g["name"] not in consumed and not placement_for(src_conf, g["name"])
+              and not group_source(g, selected)]
     if groups:
         opts = [{"value": g["name"], "label": f"{g['name']} ({g['source_hint'] or '?'}, "
                  f"{g['n_entries']} plików)"} for g in groups]
-        default = [g["name"] for g in groups
-                   if chosen_source and (g["source_hint"] == chosen_source or g["name"].lower() == chosen_source.lower())]
+        # Nic nie jest zaznaczone domyślnie. Zostały tu WYŁĄCZNIE foldery, które nie
+        # należą do żadnego wybranego źródła — a paczka z materiałami afiliacji i
+        # programmatic obok GDN nie może po cichu dorzucić obcych wymiarów do zlecenia
+        # GDN (dokładnie to zdarzyło się na żywej sesji). Wcześniejszy domyślny
+        # `[groups[0]]` zaznaczał pierwszy z nich bez pytania.
         q.append({
             "id": "groups", "type": "multi_choice",
-            "prompt": "Zip zawiera kilka folderów źródeł/formatów. Które kodujemy?",
-            "options": opts, "default": default or [groups[0]["name"]],
-            "note": "Folder inny niż główne źródło (np. Screening) → osobny placement obok Display.",
+            "prompt": "Zip zawiera foldery/paczki spoza wybranych źródeł. Które jeszcze kodujemy?",
+            "options": opts, "default": [],
+            "note": "Domyślnie ŻADNEGO — kodujemy tylko wybrane źródła. Zaznacz, jeśli "
+                    "materiały z tego folderu też mają wejść (powstanie osobny placement).",
         })
     if line_conflict and line_conflict.get("conflict"):
         ex_name = line_conflict.get("existingLpName") or ""
@@ -119,7 +158,14 @@ def _line_node(L, fallback_url=None):
     return {"number": L["lineNumber"], "lpName": L["lpName"],
             "creativeName": L.get("creativeName") or f"linia{L['lineNumber']}",
             "path": L.get("path"), "url": L.get("url") or fallback_url,
-            "reusedLine": L.get("reused", False), "label": L.get("label")}
+            "reusedLine": L.get("reused", False), "label": L.get("label"),
+            # źródło TEJ strony docelowej, tak jak stoi w nazwie LP — przy zleceniu
+            # wieloźródłowym decyduje, na których placementach ta linia się pojawia
+            "source": L.get("source"),
+            # the keyword the user typed for this page, and whether it had to be
+            # dropped (the address is already a landing page under another name)
+            "keyword": L.get("keyword"),
+            "keywordIgnored": bool(L.get("keywordIgnored"))}
 
 
 def _unit_folder(u):
@@ -132,7 +178,7 @@ def _unit_folder(u):
 BASE_FORMATS = {"gif", "png", "html", "video"}
 
 
-def file_format(unit, conf):
+def file_format(unit, conf, folder=None):
     """The file format a unit's FOLDER declares — `gif` / `png` / `html` / … / None.
 
     Read from the WORDS of the unit's top-level folder (`SPÓŁKA JPG`, `HTML FRC`,
@@ -153,9 +199,25 @@ def file_format(unit, conf):
     aliases = {str(k).lower(): v for k, v in (fconf.get("aliases") or {}).items()}
     known = (set(aliases) | {str(k).lower() for k in (fconf.get("placements") or {})}
              | BASE_FORMATS)
-    words = matcher.normalize(_unit_folder(unit) or "").split("_")
+    words = matcher.normalize(folder or _unit_folder(unit) or "").split("_")
     found = next((w for w in words if w in known), None)
     return aliases.get(found, found)
+
+
+def placement_for(conf, name):
+    """The placement a top-level folder maps to for this source, or None when the folder
+    names no format this source knows (`placementByFormat`, case-insensitive).
+
+    Needed because `format_hint` from the parser is ZIP-GLOBAL: a Meta package holding
+    `karuzela/` and `statyki/` hints "Karuzela" for the whole zip, so the statics ended
+    up in a second placement also called Karuzela. The folder a unit actually came from
+    is the reliable signal; the config decides both which folders are formats and how
+    the placement is spelled (`karuzela` -> `Karuzela`).
+    """
+    if not name:
+        return None
+    pbf = {str(k).lower(): v for k, v in (conf.get("placementByFormat") or {}).items()}
+    return pbf.get(str(name).lower())
 
 
 def format_mode(conf):
@@ -164,11 +226,45 @@ def format_mode(conf):
     return mode if mode in ("ignore", "adSuffix", "placement") else "ignore"
 
 
+def selected_sources(source, sources=None):
+    """Sources of ONE order, primary first, deduplicated — `source` always leads.
+
+    One order may cover several sources when the package separates them by folder
+    (`GDN/` + `Programmatic/`). The primary source is what names the order (its Site is
+    the badge, its config names the leftover materials); every other selected source
+    contributes its OWN Site, placement names and adKey.
+    """
+    out = [source]
+    for s in sources or []:
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def group_source(group, selected):
+    """Which SELECTED source a zip folder belongs to, or None.
+
+    Matched on the parser's `source_hint` first (it already maps `fb` -> Facebook) and
+    then on the raw folder name, both case-insensitively — a delivery writes `GDN/`,
+    `gdn/` or `Programmatic/` as it pleases.
+    """
+    if not group:
+        return None
+    hint = (group.get("source_hint") or "").lower()
+    name = (group.get("name") or "").lower()
+    return next((s for s in selected if s.lower() in (hint, name)), None)
+
+
 def build_proposal(source, parsed, campaign, line=None, existing=None, source_map=None,
                    campaign_lps=None, target_url=None, line_conflict=None,
-                   lines=None, folder_match=None):
+                   lines=None, folder_match=None, sources=None, line_addresses=None):
     """
-    source       : "GDN"/"Facebook"/...
+    source       : "GDN"/"Facebook"/... — the PRIMARY source of the order
+    sources      : every source of this order (primary first). A package that separates
+                   sources by folder (`GDN/` + `Programmatic/`) is trafficked in one go:
+                   each folder becomes placements on ITS OWN Site, named by ITS OWN
+                   config (placementByFormat/adKey/fileFormats). Materials outside any
+                   source folder belong to the primary source.
     parsed       : parse_zip.parse() result
     campaign     : {"id": str|None, "name": str, "status": "existing"|"new"}
     line         : matcher.resolve_line() result — single-line shorthand for `lines`
@@ -179,11 +275,16 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     folder_match : matcher.match_folders_to_lps() result. A folder mapped to an LP
                    stops being a placement discriminator; materials with no folder
                    mapping go to EVERY line (the "same graphics, both pages" case).
+                   Its `map` points at ADDRESSES, not at entries of `lines` — with
+                   several sources one address yields one line entry per source.
+    line_addresses: for each entry of `lines`, the index of the ADDRESS it came from.
+                   Defaults to identity (one entry per address, the single-source case).
     existing     : optional {site: {placement: {ad: [creativeNames]}}}
     campaign_lps : optional [{lpName, lpUrl}] existing landing pages of the campaign
     target_url   : optional full URL being added (shown for the current line)
     """
     source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    selected = selected_sources(source, sources)
     main_conf = source_map.get(source, {"site": source, "placementByFormat": {},
                                         "adKey": "dimension"})
     main_site = main_conf["site"]
@@ -192,6 +293,11 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     line_nodes = [_line_node(L, target_url if i == 0 else None)
                   for i, L in enumerate(lines)]
     multi = len(line_nodes) > 1
+    # Z kilkoma źródłami każda linia ma LP na KAŻDE źródło (linia1-GDN obok
+    # linia1-Programmatic), więc placement musi brać creative tylko z LP swojego
+    # źródła. Filtrujemy WYŁĄCZNIE gdy źródeł jest więcej niż jedno — przy jednym
+    # nie ma czego wybierać, a niedopasowanie tokenu opróżniłoby ady po cichu.
+    multi_src = len({ln.get("source") for ln in line_nodes if ln.get("source")}) > 1
     fmatch = folder_match or {}
     folder_map = fmatch.get("map") or {}
     # Folders that are landing-page names and NOTHING else, so they must not also split
@@ -204,17 +310,20 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     # Which line(s) does each unit feed? A unit from a folder mapped to a landing page
     # feeds only that one; anything unmapped feeds all of them.
     all_idx = list(range(len(line_nodes)))
-    mode = format_mode(main_conf)
-    fmt_placements = {str(k).lower(): v for k, v in
-                      ((main_conf.get("fileFormats") or {}).get("placements") or {}).items()}
+    # folder -> ADRES, a adres może mieć kilka wpisów (po jednym na źródło)
+    addr_of = list(line_addresses or range(len(line_nodes)))
+    lines_of_addr = {}
+    for j, a in enumerate(addr_of):
+        lines_of_addr.setdefault(a, []).append(j)
     units_all = []
     for u in parsed["units"]:
         v = dict(u)
         idx = folder_map.get(_unit_folder(u))
-        v["_lines"] = [idx] if idx is not None else all_idx
-        # read the format BEFORE the folder is cleared below: one folder name carries
-        # both signals (`SPÓŁKA JPG` = which page, and which file format)
-        v["_format"] = file_format(u, main_conf) if mode != "ignore" else None
+        v["_lines"] = lines_of_addr.get(idx, all_idx) if idx is not None else all_idx
+        # remember the folder BEFORE it is cleared below: one folder name carries both
+        # signals (`SPÓŁKA JPG` = which page, and which file format), and the format is
+        # read later — per source, because each source has its own fileFormats config
+        v["_folder"] = _unit_folder(u)
         if v.get("group") in consumed:
             v["group"] = None          # consumed as an LP discriminator, not a placement
         units_all.append(v)
@@ -227,30 +336,63 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     grouped = {g["name"] for g in groups}
     if not groups or any(u.get("group") not in grouped for u in units_all):
         groups = [None] + groups
-    placements = []
+    placements, plc_by_key = [], {}
     for g in groups:
         units = ([u for u in units_all if u.get("group") not in grouped] if g is None
                  else [u for u in units_all if u.get("group") == g["name"]])
         if not units:
             continue
-        if g is None or (g["source_hint"] or g["name"]).lower() == source.lower():
-            g_source, g_site = source, main_site
-            placement_name = main_conf.get("placementByFormat", {}).get(fmt, fmt)
-        else:                              # extra format folder (e.g. Screening) on same site
+        sel_source = group_source(g, selected)          # folder = jedno z WYBRANYCH źródeł
+        fmt_folder = placement_for(main_conf, g["name"]) if g else None
+        # what the placement reports as its source GROUP: neither a format folder of this
+        # source nor a folder of a source the user SELECTED is one — there is nothing to
+        # ask about and nothing for the UI to filter by (see build_questions)
+        pl_group = None if (g is None or fmt_folder or sel_source) else g["name"]
+        if g is None or sel_source:
+            # own source (incl. the primary one): own Site, own placement naming, own adKey
+            g_source = sel_source or source
+            conf = source_map.get(g_source, main_conf)
+            g_site = conf.get("site", main_site)
+            placement_name = placement_for(conf, fmt) or fmt
+        elif fmt_folder:
+            # a FORMAT folder of THIS source (Meta: karuzela/, statyki/) — not a foreign
+            # source, so the source stays and the config spells the placement
+            g_source, g_site, conf, placement_name = source, main_site, main_conf, fmt_folder
+        else:                              # obcy folder (np. Screening) na Site źródła
             g_source = g["source_hint"] or g["name"]
-            g_site = main_site
-            placement_name = g["name"]
-        ad_key = source_map.get(g_source, main_conf).get("adKey", "dimension")
+            g_site, conf, placement_name = main_site, main_conf, g["name"]
+        ad_key = source_map.get(g_source, conf).get("adKey", "dimension")
+        # file-format handling is per source too (mode + aliases + placement names)
+        mode = format_mode(conf)
+        fmt_placements = {str(k).lower(): v for k, v in
+                          ((conf.get("fileFormats") or {}).get("placements") or {}).items()}
+        for u in units:
+            u["_format"] = (file_format(u, conf, u.get("_folder"))
+                            if mode != "ignore" else None)
 
         # `placement` mode: the file format picks the placement (gif -> GIF, html ->
         # HTML, png -> Display), each holding only the dimensions from its own folders.
         # Any other mode leaves the single name derived from the group.
         buckets = {}
         for u in units:
-            key = (fmt_placements.get(u["_format"], placement_name)
-                   if mode == "placement" and u.get("_format") else placement_name)
+            if mode == "placement" and u.get("_format"):
+                key = fmt_placements.get(u["_format"], placement_name)
+            elif g is None:
+                # The leftover bucket collects everything outside the recognised groups,
+                # so its units may come from DIFFERENT format folders (Meta `statyki/`
+                # next to `karuzela/`). Each folder the source knows as a format gets its
+                # own placement; the zip-global format hint only names what is left.
+                # An LP folder is skipped: it says which page the materials serve, not
+                # which format they are.
+                fld = u.get("_folder")
+                key = (placement_for(conf, fld) if fld not in consumed else None
+                       ) or placement_name
+            else:
+                key = placement_name
             buckets.setdefault(key, []).append(u)
 
+        # token źródła tak, jak stoi w nazwie LP (Facebook/Meta -> FB)
+        g_token = lp_source(g_source, source_map)
         for plc_name, bucket in buckets.items():
             ex_plc = ((existing or {}).get(g_site, {})).get(plc_name)
             # an ad name can come from several units (prospecting/300x250 and
@@ -259,6 +401,10 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
             ads = {}
             for u in bucket:
                 base = _ad_name(u, ad_key)
+                # numerowany zestaw materiałów (`linia1/` + `linia2/` w paczce) to dwa
+                # komplety tych samych wymiarów pod JEDNYM LP — rozróżniane na adzie
+                if u.get("set_index"):
+                    base = f"{base}_{u['set_index']}"
                 # `adSuffix` mode: one placement, the format separates ads (160x600_gif)
                 name = (f"{base}_{u['_format']}"
                         if mode == "adSuffix" and u.get("_format") else base)
@@ -271,6 +417,9 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                 creatives = []
                 for i in sorted(slot["by_line"]):
                     u, ln = slot["by_line"][i], line_nodes[i]
+                    if (multi_src and ln.get("source")
+                            and ln["source"].lower() != (g_token or "").lower()):
+                        continue           # LP innego źródła — nie na tym placemencie
                     cr = {"name": ln["creativeName"], "type": u.get("type"),
                           "packaged": u.get("packaged", False),
                           "source_path": u.get("source_path"),
@@ -278,22 +427,51 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                     if multi:  # the orchestrator needs an explicit LP per creative
                         cr["lpName"], cr["lpUrl"] = ln["lpName"], ln["url"] or ""
                     creatives.append(cr)
+                if not creatives:
+                    continue               # nic z tego źródła nie trafia na ten ad
                 ad_nodes.append({"name": name,
                                  "dimension": slot["unit"].get("dimension"),
                                  "status": _status(name, ex_plc),
                                  "creatives": creatives})
             ad_nodes.sort(key=lambda a: a["name"])
-            placements.append({
-                "name": plc_name, "group": (g and g["name"]), "source": g_source,
-                "site": g_site, "compatibility": "DISPLAY", "size": "1x1",
-                "status": _status(plc_name, (existing or {}).get(g_site)),
-                "ads": ad_nodes,
-            })
+            # Ten sam Site + ta sama nazwa = JEDEN placement w CM360, więc jeden węzeł
+            # w propozycji. Zdarza się, gdy zip ma folder źródła i materiały luzem obok
+            # niego (`GDN/` + plik w korzeniu) — wcześniej powstawały dwa identyczne
+            # węzły, a orkiestrator dopisywałby ady do tego samego placementu dwa razy.
+            key = (g_site, plc_name, pl_group)
+            prev = plc_by_key.get(key)
+            if prev is None:
+                plc_by_key[key] = {
+                    "name": plc_name, "group": pl_group, "source": g_source,
+                    "site": g_site, "compatibility": "DISPLAY", "size": "1x1",
+                    "status": _status(plc_name, (existing or {}).get(g_site)),
+                    "ads": ad_nodes,
+                }
+                placements.append(plc_by_key[key])
+                continue
+            by_ad = {a["name"]: a for a in prev["ads"]}
+            for a in ad_nodes:
+                cur = by_ad.get(a["name"])
+                if not cur:
+                    prev["ads"].append(a)
+                    by_ad[a["name"]] = a
+                    continue
+                have = {(c["name"], c.get("lpName")) for c in cur["creatives"]}
+                cur["creatives"] += [c for c in a["creatives"]
+                                     if (c["name"], c.get("lpName")) not in have]
+            prev["ads"].sort(key=lambda a: a["name"])
 
+    # every Site this order touches, primary first — the orchestrator writes each
+    # placement on ITS OWN Site and `/api/commit` refuses when one is missing
+    site_names = list(dict.fromkeys([main_site] + [pl["site"] for pl in placements]))
     proposal = {
         "campaign": campaign,
         "source": source,
+        "sources": selected,
         "site": {"name": main_site, "status": _status(main_site, existing)},
+        "sites": [{"name": n, "status": _status(n, existing),
+                   "source": next((pl["source"] for pl in placements if pl["site"] == n),
+                                  source)} for n in site_names],
         # `line` stays the primary line for everything that only ever handles one
         # (orchestrator default LP, UI header); `lines` is the full set.
         "line": line_nodes[0],
@@ -301,7 +479,9 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
         "lpFolders": folder_match or None,
         "existingLines": _group_lines(campaign_lps),
         "questions": build_questions(parsed, line_conflict, chosen_source=source,
-                                     folder_match=folder_match, lines=line_nodes),
+                                     folder_match=folder_match, lines=line_nodes,
+                                     source_map=source_map, sources=selected,
+                                     line_addresses=addr_of),
         "placements": placements,
         "warnings": warnings,
     }

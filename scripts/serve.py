@@ -2,8 +2,8 @@
 
   GET  /                     -> ui/index.html
   GET  /<file>               -> static file from ui/
-  POST /api/build-proposal   -> {link|links[], source, message, zipB64|zipPath,
-                                 folderMap?} -> proposal JSON
+  POST /api/build-proposal   -> {link|links[], keywords[]?, source, message,
+                                 zipB64|zipPath, folderMap?} -> proposal JSON
 
 Run:  py scripts/serve.py   (then open http://127.0.0.1:8765/)
 Read-only against the TEST advertiser (cm_auth guard still applies).
@@ -70,22 +70,42 @@ CTYPE = {".html": "text/html; charset=utf-8", ".js": "application/javascript; ch
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
 
 
-def _lp_folder_candidates(parsed):
+def _lp_folder_candidates(parsed, selected=None):
     """Top-level zip folders that could denote a landing page. Both parse_zip buckets
     count: `remarketing/` is a GROUP_KEYWORD so it lands in `groups`, `prospecting/`
-    is not so it lands in `variants` — for LP matching the distinction is meaningless."""
-    names = [g["name"] for g in parsed.get("groups") or []]
-    return names + [v for v in parsed.get("variants") or [] if v and v not in names]
+    is not so it lands in `variants` — for LP matching the distinction is meaningless.
+
+    A folder of a SELECTED SOURCE is excluded: it says which source the materials are
+    for, never which page. Without this the `GDN/` + `Programmatic/` package broke —
+    the addresses carried `utm_source=gdn` / `=programmatic`, so both folders matched a
+    landing page by name, were consumed as LP discriminators, stopped being source
+    groups and the second source vanished from the tree without a word.
+    """
+    src_folders = {g["name"] for g in parsed.get("groups") or []
+                   if B.group_source(g, selected or [])}
+    src_folders |= {v for v in parsed.get("variants") or []
+                    if B.group_source({"name": v}, selected or [])}
+    names = [g["name"] for g in parsed.get("groups") or [] if g["name"] not in src_folders]
+    return names + [v for v in parsed.get("variants") or []
+                    if v and v not in names and v not in src_folders]
 
 
-def _match_lp_folders(links, anchor, parsed, override=None):
+def _match_lp_folders(links, anchor, parsed, override=None, keywords=None, selected=None):
     """Deterministic folder -> landing page matching, with the user's answers on top.
 
     Returns (folder_match, labels) where labels feeds resolve_lines: a folder name is
     the fallback label for a landing page whose URL carries no readable discriminator.
+
+    A keyword the user typed for a landing page joins its discriminator tokens: the
+    folder `Lookalike/` and the keyword `lookalike` are exactly the pairing this is
+    meant to find, and a keyword is a better signal than anything derived from the URL.
     """
     discs = M.lp_discriminators(links, anchor)
-    fm = M.match_folders_to_lps(_lp_folder_candidates(parsed), discs)
+    for i, kw in (keywords or {}).items():
+        tok = M.normalize(M.keyword_label(kw) or "")
+        if tok and int(i) < len(discs) and tok not in discs[int(i)]:
+            discs[int(i)] = [tok] + discs[int(i)]
+    fm = M.match_folders_to_lps(_lp_folder_candidates(parsed, selected), discs)
     # Only folders the AUTOMATIC pass recognised by name stop being placement
     # discriminators — those are landing-page folders and nothing else. A user answer
     # says which page a folder feeds; it does NOT stop `screening/` from being a format
@@ -111,17 +131,55 @@ def _match_lp_folders(links, anchor, parsed, override=None):
     return fm, labels
 
 
+def _line_entries(links, keywords, labels, selected, row_sources, source_map=None):
+    """One landing page per (address × source) — the shape `resolve_lines` needs.
+
+    The source is part of an LP name, so an order covering several sources needs an LP
+    per source: `linia1-GDN` next to `linia1-Programmatic`, same number, normally the
+    same page with different tracking parameters. An address the user assigned to a
+    source belongs to that source; a source with no address of its own reuses the
+    addresses of the PRIMARY source (that is the "same page, two sources" case).
+
+    Returns (urls, {i: labelFallback}, {i: keyword}, {i: sourceToken}, [addressIndex]).
+    """
+    urls, ent_labels, ent_kw, ent_src, addr_of = [], {}, {}, {}, []
+    for s in selected:
+        own = [i for i in range(len(links)) if (row_sources or {}).get(i) == s]
+        if not own:
+            own = [i for i in range(len(links))
+                   if (row_sources or {}).get(i, selected[0]) == selected[0]]
+        for i in own:
+            j = len(urls)
+            urls.append(links[i])
+            ent_src[j] = B.lp_source(s, source_map)
+            if i in labels:
+                ent_labels[j] = labels[i]
+            if i in keywords:
+                ent_kw[j] = keywords[i]
+            addr_of.append(i)
+    return urls, ent_labels, ent_kw, ent_src, addr_of
+
+
 def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None,
-                   links=None, folder_map=None):
+                   links=None, folder_map=None, keywords=None, sources=None,
+                   row_sources=None):
     """Build the editable proposal for one order.
 
     `links` carries SEVERAL landing pages that all belong to the same campaign; `link`
     is the single-link shorthand and stays the primary one. Every link must resolve to
     the same advertiser — a mixed order is a mistake worth refusing rather than
     trafficking half of.
+
+    `keywords` is the word the user typed next to each address, positionally aligned
+    with `links`; it becomes that landing page's label (`linia3-FB-lookalike`).
+
+    `sources` are ALL sources of this order (primary `source` first) — a package that
+    separates sources by folder (`GDN/` + `Programmatic/`) is trafficked in one go.
+    `row_sources` says which source each address belongs to ({addressIndex: source}).
     """
     rules = json.load(open(MAP_PATH, encoding="utf-8"))["rules"]
-    links = [l.strip() for l in (links or [link]) if l and l.strip()]
+    # deduplicate before anything is keyed by position (see matcher.dedupe_links)
+    links, keywords, row_sources = M.dedupe_links(links or [link], keywords, row_sources)
     if not links:
         return {"error": "Podaj co najmniej jeden link do strony docelowej."}
     link = links[0]
@@ -137,7 +195,16 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
     anchor = rule.get("anchor", [])
     svc = service(read_only=True)
     parsed = parse_zip.parse(zip_path)
-    folder_match, labels = _match_lp_folders(links, anchor, parsed, folder_map)
+    # `source` stays the config key (Site, placement names, adKey); only the LP/creative
+    # names use the short form the account already holds (Facebook -> linia3-FB)
+    lp_src = B.lp_source(source)
+    selected = B.selected_sources(source, sources)
+    folder_match, labels = _match_lp_folders(links, anchor, parsed, folder_map, keywords,
+                                            selected)
+    # źródło przypisane do adresu ma sens tylko jeśli jest wśród wybranych
+    row_src = {int(i): s for i, s in (row_sources or {}).items() if s in selected}
+    ent_urls, ent_labels, ent_kw, ent_src, addr_of = _line_entries(
+        links, keywords, labels, selected, row_src)
 
     if new_campaign:
         # brand-new campaign: no campaign LPs yet, so these links are the first lines
@@ -146,10 +213,12 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
         state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER)
         prop = B.build_proposal(source, parsed,
                                 {"id": None, "name": new_campaign, "status": "new"},
-                                lines=M.resolve_lines(links, anchor, source, [], labels),
+                                lines=M.resolve_lines(ent_urls, anchor, lp_src, [],
+                                                      ent_labels, ent_kw, ent_src),
                                 existing={s: {} for s in state["sites_by_name"]},
                                 campaign_lps=[], target_url=link,
-                                folder_match=folder_match)
+                                folder_match=folder_match, sources=selected,
+                                line_addresses=addr_of)
         return _attach_ai(prop, parsed, message, rules)
 
     camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
@@ -173,17 +242,20 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                     "candidates": ranked_first[:5]}
 
     this = [l for l in camp_lps if l["campaignId"] == cid]
-    lines = M.resolve_lines(links, anchor, source, this, labels)
-    # the reuse-vs-new-line question is per landing page; report the first one that hits
-    conflict = next((c for c in (M.detect_line_conflict(l, anchor, source, this)
-                                 for l in links) if c["conflict"]), {"conflict": False})
+    lines = M.resolve_lines(ent_urls, anchor, lp_src, this, ent_labels, ent_kw, ent_src)
+    # the reuse-vs-new-line question is per landing page AND per source (the source is
+    # part of the LP name, so `linia2-GDN` and `linia2-Programmatic` collide separately)
+    conflict = next((c for c in (M.detect_line_conflict(u, anchor, ent_src[j], this)
+                                 for j, u in enumerate(ent_urls)) if c["conflict"]),
+                    {"conflict": False})
     campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
     state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
     prop = B.build_proposal(source, parsed,
                             {"id": cid, "name": campaign["name"], "status": "existing"},
                             lines=lines, existing=existing_tree(state), campaign_lps=this,
                             target_url=link, line_conflict=conflict,
-                            folder_match=folder_match)
+                            folder_match=folder_match, sources=selected,
+                            line_addresses=addr_of)
     return _attach_ai(prop, parsed, message, rules)
 
 
@@ -326,7 +398,9 @@ class Handler(BaseHTTPRequestHandler):
         return build_proposal(links[0], zip_path, req["source"], req.get("message", ""),
                               campaign_id=req.get("campaignId"),
                               new_campaign=req.get("newCampaign"),
-                              links=links, folder_map=req.get("folderMap"))
+                              links=links, folder_map=req.get("folderMap"),
+                              keywords=req.get("keywords"), sources=req.get("sources"),
+                              row_sources=req.get("linkSources"))
 
     def _create_site(self, req):
         """Add a Site to the account. dryRun=True -> plan only (still resolves the

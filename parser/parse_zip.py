@@ -108,11 +108,50 @@ def _top_folder(rel):
     return parts[0] if len(parts) > 1 else None
 
 
+SET_RE = re.compile(r"^\s*linia\s*(\d+)\s*$", re.I)
+# `KV1_NNW_paczki z reformatami` -> KV1: key visual jako zestaw materiałów.
+# Świadomie `(?![0-9])`, a NIE `\b`: po „KV1" stoi podkreślenie, które jest znakiem
+# słowa, więc granica słowa tam nie występuje i wzorzec z `\b` nie trafiał nigdy.
+KV_RE = re.compile(r"^\s*(KV\s*\d+)(?![0-9])", re.I)
+
+
+def _set_label(seg):
+    """Etykieta zestawu z nazwy JEDNEGO segmentu ścieżki, albo None."""
+    m = SET_RE.match(seg)
+    if m:
+        return m.group(1)                      # `linia2/` -> sufiks ada `_2`
+    m = KV_RE.match(seg)
+    if m:
+        return re.sub(r"\s+", "", m.group(1)).upper()    # `KV1_…/` -> `_KV1`
+    return None
+
+
+def _set_index(rel):
+    """Etykieta ZESTAWU materiałów z folderu na dowolnym poziomie ścieżki.
+
+    Paczki przychodzą jako `GDN/linia1/banner_300x250/…` + `GDN/linia2/banner_300x250/…`,
+    czyli dwa komplety tych samych wymiarów. To NIE są dwie strony docelowe (ustalone
+    z użytkownikiem): kodujemy je pod jednym LP i rozróżniamy na poziomie ada
+    (`300x250_1`, `300x250_2`). Bez tego oba komplety zwijały się w jeden ad i połowa
+    materiałów przepadała bez śladu.
+
+    Ten sam wzorzec nosi key visual: `KV1_NNW_paczki z reformatami/` +
+    `KV3_NNW_…/` to dwa komplety tych samych wymiarów pod jednym LP, rozróżniane
+    na adzie (`240x400_KV1`, `240x400_KV3`) — dokładnie tak, jak poprosił użytkownik.
+    """
+    for seg in rel.split("/")[:-1]:
+        lab = _set_label(seg)
+        if lab:
+            return lab
+    return None
+
+
 def _variant(rel):
-    """Meaningful folder-based variant: the top folder after root-strip,
-    unless it is itself just a dimension (then it's a size folder, not a variant)."""
+    """Meaningful folder-based variant: the top folder after root-strip, unless it is
+    itself just a dimension (then it's a size folder) or a set folder (`linia{N}`,
+    `KV{N}_…` — an ad-level distinction, handled by _set_index)."""
     top = _top_folder(rel)
-    if top and not _dim(top):
+    if top and not _dim(top) and not _set_label(top):
         return top
     return None
 
@@ -122,26 +161,69 @@ def _card_index(base):
     return m.group(1) if m else None
 
 
+def _package_dims(inner_names):
+    """{wymiar: [pliki]} dla zawartości JEDNEJ zagnieżdżonej paczki.
+
+    Wymiar czytany z folderu (`240x400/index.html`), a gdy paczka jest płaska — z nazwy
+    pliku. Jednostki bez rozpoznanego wymiaru są pomijane (preview, manifesty), bo nie
+    są materiałem do trafficowania. Kilka wymiarów = paczka wielu banerów, jeden = jeden
+    baner (i wtedy zostaje przy dotychczasowej obsłudze „zip = jedna jednostka").
+    """
+    out = {}
+    for n in _strip_root_names(inner_names):
+        dim = _dim(_top_folder(n) or "") or _dim(os.path.basename(n)) or _dim(n)
+        if dim:
+            out.setdefault(dim, []).append(n)
+    return out
+
+
+def _strip_root_names(names):
+    return [rel for _o, rel in _strip_root(names)]
+
+
 def _parse_units(zf):
     """Return list of ad-unit proposals. Handles nested per-size zips too."""
     pairs = _strip_root(_list_names(zf))
     units = []
 
-    # Case A: nested per-size zips (each inner zip = one uploadable HTML5 unit)
+    # Case A: nested zips. Two different things arrive this way and mixing them up
+    # silently loses materials:
+    #   * ONE banner per zip (the size is in the zip's own name) -> one unit, as before;
+    #   * a whole PACKAGE per zip (`..._kv1_gdn.zip` holding 240x400/, 250x360/, …) ->
+    #     one unit per dimension INSIDE it. Wcześniej taka paczka dawała jedną jednostkę
+    #     z PIERWSZYM napotkanym wymiarem, więc z 8 wymiarów GDN zostawał jeden — a
+    #     w drzewie lądował wymiar z paczki innego źródła. Zgłoszone z żywej sesji.
     for orig, rel in pairs:
         if not rel.lower().endswith(".zip"):
             continue
-        dim = _dim(os.path.basename(rel)) or _dim(rel)
-        atype = "html5"
+        own_dim = _dim(os.path.basename(rel)) or _dim(rel)
+        atype, inner = "html5", []
         try:
             with zf.open(orig) as fh:
                 inner = _list_names(zipfile.ZipFile(io.BytesIO(fh.read())))
                 atype = _asset_type(inner)
-                dim = dim or _dim(" ".join(inner))
         except Exception:
             pass
-        units.append({"dimension": dim, "variant": _variant(rel), "card_index": None,
-                      "type": atype, "packaged": True, "source_path": orig, "n_files": 1})
+        # źródło TEJ paczki bierze się z jej własnej nazwy (`..._kv1_gdn.zip`), nie z
+        # całego zipa — inaczej materiały afiliacji trafiłyby do zlecenia GDN
+        pkg_src = None if own_dim else _source_hint([os.path.basename(rel)])
+        inner_dims = _package_dims(inner) if not own_dim else {}
+        if len(inner_dims) > 1:
+            for dim, names in sorted(inner_dims.items()):
+                units.append({"dimension": dim, "variant": _variant(rel),
+                              "card_index": None, "set_index": _set_index(rel),
+                              "type": _asset_type(names), "packaged": True,
+                              "package": os.path.basename(rel), "package_source": pkg_src,
+                              "source_path": f"{orig}/{dim}", "n_files": len(names)})
+            continue
+        # JEDEN baner w zipie — celowo BEZ pól `package`: nazwa takiego zipa niesie
+        # wymiar (`160x600_gdn 1.zip`, `500x400.zip`), a nie źródło, więc wyciąganie
+        # z niej grupy robiło grupy o nazwach wymiarów i dublowało istniejące (`gdn 1`
+        # obok folderu `GDN`). Grupę takich jednostek nadaje folder, jak dotąd.
+        units.append({"dimension": own_dim or _dim(" ".join(inner)),
+                      "variant": _variant(rel), "card_index": None,
+                      "set_index": _set_index(rel), "type": atype, "packaged": True,
+                      "source_path": orig, "n_files": 1})
 
     # Case B: loose files, grouped by (dimension, variant, card)
     groups = {}
@@ -150,19 +232,21 @@ def _parse_units(zf):
             continue
         base = os.path.basename(rel)
         dim = _dim(base) or _dim(_top_folder(rel) or "") or _dim(rel)
-        key = (dim, _variant(rel), _card_index(base))
+        key = (dim, _variant(rel), _card_index(base), _set_index(rel))
         groups.setdefault(key, {"orig": orig, "names": []})["names"].append(rel)
 
-    for (dim, variant, card), g in groups.items():
+    for (dim, variant, card, sset), g in groups.items():
         units.append({"dimension": dim, "variant": variant, "card_index": card,
-                      "type": _asset_type(g["names"]), "packaged": False,
+                      "set_index": sset, "type": _asset_type(g["names"]),
+                      "packaged": False,
                       "source_path": os.path.dirname(g["orig"]) or "/",
                       "n_files": len(g["names"])})
 
-    # Dedup: if a packaged .zip exists for (dim,variant), drop the unpacked folder dup
-    packaged = {(u["dimension"], u["variant"]) for u in units if u["packaged"]}
-    units = [u for u in units
-             if u["packaged"] or (u["dimension"], u["variant"]) not in packaged]
+    # Dedup: if a packaged .zip exists for (dim,variant,set), drop the unpacked folder dup
+    packaged = {(u["dimension"], u["variant"], u.get("set_index"))
+                for u in units if u["packaged"]}
+    units = [u for u in units if u["packaged"]
+             or (u["dimension"], u["variant"], u.get("set_index")) not in packaged]
 
     # Drop noise: dimensionless html/other wrappers (preview.html, folder roots)
     dropped = [u["source_path"] for u in units
@@ -183,6 +267,7 @@ def parse(path):
         atype = units[0]["type"]
     units.sort(key=lambda u: (str(u.get("variant") or ""),
                               str(u.get("dimension") or ""),
+                              str(u.get("set_index") or ""),
                               str(u.get("card_index") or "")))
     dims = sorted({u["dimension"] for u in units if u["dimension"]})
     variants = sorted({u["variant"] for u in units if u["variant"]})
@@ -190,6 +275,24 @@ def parse(path):
     for u in units:
         sp = "/" + u["source_path"].replace("\\", "/") + "/"
         u["group"] = next((g["name"] for g in groups if f"/{g['name']}/" in sp), None)
+
+    # Grupa z nazwy ZAGNIEŻDŻONEJ PACZKI (`…_kv1_gdn.zip` / `…_kv1_afiliacja.zip`).
+    # Bez tego cały podział na źródła był niewidoczny i materiały afiliacji oraz
+    # programmatic wpadały do zlecenia GDN jako „reszta" — a tak właśnie do drzewa
+    # trafiły wymiary z obcych paczek (realne zgłoszenie). Etykietą jest rozpoznane
+    # źródło, a gdy nie jest znane — ostatni człon nazwy paczki (`afiliacja`), żeby
+    # KV1 i KV3 tej samej paczki należały do JEDNEJ grupy, a nie dwóch.
+    pkg_counts = {}
+    for u in units:
+        if not u.get("package"):
+            continue
+        stem = os.path.splitext(u["package"])[0]
+        gname = u.get("package_source") or stem.split("_")[-1]
+        u["group"] = gname
+        pkg_counts[gname] = pkg_counts.get(gname, 0) + 1
+    have = {g["name"] for g in groups}
+    groups += [{"name": n, "source_hint": _source_hint([n]), "n_entries": c}
+               for n, c in sorted(pkg_counts.items()) if n not in have]
 
     warnings = []
     if any(u["dimension"] is None for u in units):

@@ -230,5 +230,36 @@ check("...i wskazuje wszystkie creative, które z niego korzystają (to skutek, 
 check("gdy wszystko ma adresy — brak zastrzeżeń",
       Orchestrator.lp_urls_missing(proposal, state), {})
 
+print("\nKILKA ŹRÓDEŁ w jednym zleceniu — o Site decyduje PLACEMENT, nie zlecenie "
+      "(paczka z folderami GDN/ + Programmatic/):")
+prop_ms = B.build_proposal("GDN", parsed, camp, line,
+                           target_url="https://x/nieruchomosci/promocja")
+# drugie źródło: własny Site, ten sam numer linii, LP z sufiksem swojego źródła
+prop_ms["placements"].append({
+    "name": "Display", "group": None, "source": "Programmatic", "site": "CG_Programmatic",
+    "compatibility": "DISPLAY", "size": "1x1", "status": "new", "ads": [
+        {"name": "300x250", "dimension": "300x250", "status": "new", "creatives": [
+            {"name": "linia2", "type": "html5", "packaged": False, "source_path": None,
+             "status": "new", "lpName": "linia2-Programmatic",
+             "lpUrl": "https://x/nieruchomosci/promocja?utm_source=programmatic"}]}]})
+state_ms = dict(state, sites_by_name={"CG_GDN": "SITE1", "CG_Programmatic": "SITE2"})
+log_ms = Orchestrator(svc=None, profile_id="P", advertiser_id="A", campaign=camp,
+                      dry_run=True).run(prop_ms, state_ms)
+check("każdy Site rozstrzygany osobno, główny pierwszy",
+      [(e["action"], e["name"]) for e in log_ms if e["kind"] == "site"],
+      [("REUSE", "CG_GDN"), ("REUSE", "CG_Programmatic")])
+check("placement drugiego źródła powstaje na SWOIM Site",
+      [(e["action"], e["detail"]) for e in log_ms if e["kind"] == "placement"],
+      [("REUSE", "site=CG_GDN"), ("CREATE", "site=CG_Programmatic")])
+check("LP drugiego źródła utworzone obok LP pierwszego",
+      sorted(e["name"] for e in log_ms if e["kind"] == "landingPage"),
+      ["linia2-GDN", "linia2-Programmatic"])
+# ad o TEJ SAMEJ nazwie istnieje na Site pierwszego źródła — nie wolno go tu użyć
+ad_ms = [e for e in log_ms if e["kind"] == "ad" and e["name"] == "300x250"]
+check("ad 300x250 na drugim Site to CREATE, mimo że ta nazwa istnieje na CG_GDN",
+      [e["action"] for e in ad_ms], ["UPDATE", "CREATE"])
+check("...i klika w LP swojego źródła",
+      "linia2-Programmatic" in ad_ms[-1]["detail"], True)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

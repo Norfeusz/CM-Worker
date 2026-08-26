@@ -191,6 +191,114 @@ check("ten sam adres co istniejące LP -> używamy go, bez zbędnej etykiety",
 check("konflikt nadal zgłaszany, żeby użytkownik mógł wybrać reuse",
       M.detect_line_conflict(NOWY, KRED, "GDN", KLPS)["conflict"], True)
 
+print("\nsłowo klucza podane przez użytkownika (okienko przy każdym adresie LP):")
+check("spacje w środku -> myślnik", M.keyword_label(" look alike "), "look-alike")
+check("interpunkcja wycięta, wielkość liter zachowana",
+      M.keyword_label("Lookalike!"), "Lookalike")
+check("puste / same separatory -> brak etykiety",
+      (M.keyword_label("   "), M.keyword_label("---"), M.keyword_label(None)),
+      (None, None, None))
+
+# Przypadek wprost z zlecenia: ta sama strona, dwa utm_medium, źródło Facebook (FB),
+# a nazwy linii mają nieść SŁOWO KLUCZA, nie surową wartość utm.
+BIEDR = "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/standard/biedronka/other/"
+LOOK = BIEDR + "?utm_source=facebook&utm_medium=lookalike"
+RETG = BIEDR + "?utm_source=facebook&utm_medium=remarketing"
+FBLPS = [{"lpName": "linia1-FB", "lpUrl": BASE},
+         {"lpName": "linia2-FB", "lpUrl": BASE.replace("mkonto", "lokata")}]
+kw = M.resolve_lines([LOOK, RETG], KONTA, "FB", FBLPS,
+                     keywords={0: "lookalike", 1: "remarketing"})
+check("dwa adresy + dwa słowa klucza -> jedna linia, nazwy ze słów klucza",
+      [(l["lineNumber"], l["lpName"], l["creativeName"]) for l in kw],
+      [(3, "linia3-FB-lookalike", "linia3-lookalike"),
+       (3, "linia3-FB-remarketing", "linia3-remarketing")])
+
+# to jest cały sens tego pola: etykieta z utm_campaign wychodziła za długa
+# (linia2-GDN-refinansowanie2026), a użytkownik chciał `refinans`
+one = M.resolve_lines([NOWY], KRED, "GDN", KLPS, keywords={0: "refinans"})[0]
+check("słowo klucza wygrywa z etykietą wyprowadzoną z adresu",
+      (one["lpName"], one["creativeName"]), ("linia2-GDN-refinans", "linia2-refinans"))
+
+# jeden link bez kolizji nie potrzebuje etykiety, ale skoro user ją podał — jest
+solo = M.resolve_lines([PROSP], KONTA, "GDN", [], keywords={0: "wiosna"})[0]
+check("pojedynczy adres bez rodzeństwa i bez kolizji też dostaje słowo klucza",
+      (solo["lpName"], solo["creativeName"]), ("linia1-GDN-wiosna", "linia1-wiosna"))
+
+half = M.resolve_lines([PROSP, REMKT], KONTA, "GDN", [], keywords={0: "wiosna"})
+check("słowo klucza tylko przy jednym adresie -> drugi zostaje przy etykiecie z URL",
+      [l["lpName"] for l in half], ["linia1-GDN-wiosna", "linia1-GDN-remarketing"])
+
+check("klucze przychodzące z JSON-a jako tekst też działają",
+      M.resolve_lines([PROSP], KONTA, "GDN", [], keywords={"0": "wiosna"})[0]["lpName"],
+      "linia1-GDN-wiosna")
+check("puste słowo klucza nie kasuje etykiety automatycznej",
+      [l["lpName"] for l in M.resolve_lines([PROSP, REMKT], KONTA, "GDN", [],
+                                            keywords={0: "  "})],
+      ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
+
+# LP o tym adresie już jest w kampanii: przemianowanie zrobiłoby DRUGIE LP na ten sam
+# adres (_ensure_lp szuka po nazwie), więc słowo klucza jest odrzucane — ale jawnie
+ign = M.resolve_lines([STARY], KRED, "GDN", KLPS, keywords={0: "refinans"})[0]
+check("istniejące LP zachowuje swoją nazwę mimo słowa klucza",
+      (ign["lpName"], ign["creativeName"]), ("linia2-GDN", "linia2"))
+check("...i zgłasza, że słowo klucza pominięto", ign["keywordIgnored"], True)
+check("bez słowa klucza nie ma czego zgłaszać",
+      M.resolve_lines([STARY], KRED, "GDN", KLPS)[0]["keywordIgnored"], False)
+
+print("\nKILKA ŹRÓDEŁ w jednym zleceniu — LP per źródło, numer linii ten sam:")
+# jeden adres i dwa źródła: dwa LP na TYM SAMYM adresie, bo źródło jest częścią nazwy
+one_addr = M.resolve_lines([BASE, BASE], KONTA, "GDN", [],
+                           sources={1: "Programmatic"})
+check("ten sam adres pod dwoma źródłami nie zwija się do jednego LP",
+      [(l["lineNumber"], l["lpName"], l["creativeName"]) for l in one_addr],
+      [(1, "linia1-GDN", "linia1"), (1, "linia1-Programmatic", "linia1")])
+check("identyczny (adres, źródło) nadal zwija się do jednego",
+      len(M.resolve_lines([BASE, BASE], KONTA, "GDN", [])), 1)
+
+# typowy przypadek: adres per źródło, różnią się tylko parametrem
+GDNU = BASE + "?utm_source=gdn"
+PRGU = BASE + "?utm_source=programmatic"
+per_src = M.resolve_lines([GDNU, PRGU], KONTA, "GDN", [], sources={1: "Programmatic"})
+check("adres per źródło -> jedna linia, dwa LP, ŻADNYCH etykiet z utm_source",
+      [(l["lineNumber"], l["lpName"]) for l in per_src],
+      [(1, "linia1-GDN"), (1, "linia1-Programmatic")])
+check("...bo rodzeństwem jest tylko wpis o tym samym numerze I źródle",
+      [l["labelled"] for l in per_src], [False, False])
+
+# to samo rodzeństwo W OBRĘBIE jednego źródła nadal wymaga etykiet (regresja)
+same_src = M.resolve_lines([PROSP, REMKT, PROSP], KONTA, "GDN", [],
+                           sources={2: "Programmatic"})
+check("dwa adresy jednego źródła -> etykiety; trzeci wpis (inne źródło) bez etykiety",
+      [l["lpName"] for l in same_src],
+      ["linia1-GDN-prospecting", "linia1-GDN-remarketing", "linia1-Programmatic"])
+
+# LP tego adresu istnieje, ale pod INNYM źródłem — nie wolno go użyć dla naszego
+FBLP = [{"lpName": "linia2-FB", "lpUrl": PROSP}]
+xsrc = M.resolve_lines([PROSP], KONTA, "GDN", FBLP)[0]
+check("istniejące LP innego źródła nie jest przechwytywane — numer linii tak, nazwa nie",
+      (xsrc["lineNumber"], xsrc["lpName"]), (2, "linia2-GDN"))
+check("LP tego samego źródła nadal jest używane",
+      M.resolve_lines([PROSP], KONTA, "FB", FBLP)[0]["lpName"], "linia2-FB")
+
+print("\ndedupe_links — pozycje, po których keyowane jest wszystko dalej:")
+check("powtórzony adres znika, słowa klucza zostają przy swoich adresach",
+      M.dedupe_links([PROSP, REMKT, PROSP], ["lookalike", "remarketing", None]),
+      ([PROSP, REMKT], {0: "lookalike", 1: "remarketing"}, {}))
+check("słowo klucza podane przy DRUGIM wystąpieniu adresu nie ginie",
+      M.dedupe_links([PROSP, PROSP], [None, "wiosna"]), ([PROSP], {0: "wiosna"}, {}))
+check("puste adresy i puste słowa wypadają",
+      M.dedupe_links(["  ", PROSP, ""], [None, "  "]), ([PROSP], {}, {}))
+check("krótsza lista słów klucza niż adresów nie wysypuje się",
+      M.dedupe_links([PROSP, REMKT], ["wiosna"]), ([PROSP, REMKT], {0: "wiosna"}, {}))
+check("słowa klucza mogą przyjść jako słownik (jak folderMap)",
+      M.dedupe_links([PROSP, REMKT], {"1": "remarketing"}),
+      ([PROSP, REMKT], {1: "remarketing"}, {}))
+check("ten sam adres pod DWOMA źródłami to dwa wiersze, nie duplikat",
+      M.dedupe_links([PROSP, PROSP], None, ["GDN", "Programmatic"]),
+      ([PROSP, PROSP], {}, {0: "GDN", 1: "Programmatic"}))
+check("ten sam adres pod TYM SAMYM źródłem nadal się zwija",
+      M.dedupe_links([PROSP, PROSP], None, ["GDN", "GDN"]), ([PROSP], {}, {0: "GDN"}))
+
 print("\nseveral LPs in one order — folder -> LP matching:")
 fm = M.match_folders_to_lps(["prospecting", "remarketing"], d)
 check("folder names matching utm values", fm["map"], {"prospecting": 0, "remarketing": 1})

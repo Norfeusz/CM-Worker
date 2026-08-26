@@ -329,6 +329,44 @@ check("prompt każe korzystać z zipa",
 check("prompt ostrzega, że nowy placement jest PUSTY",
       "newly created placement is EMPTY" in A.INTENT_SYSTEM, True)
 
+print("\nWYMIARY PER FOLDER w żądaniu do agenta — realne zgłoszenie: agent nazwał ady\n"
+      "wymiarami z paczki INNEGO źródła, bo widział tylko wspólną listę wymiarów zipa:")
+import ai_fallback as F
+PARSED_KV = {"source_hint": "GDN", "format_hint": "Display",
+             "dimensions": ["120x600", "240x400", "250x360"],
+             "groups": [{"name": "GDN", "source_hint": "GDN", "n_entries": 4},
+                        {"name": "afiliacja", "source_hint": None, "n_entries": 2}],
+             "units": [
+                 {"dimension": "240x400", "group": "GDN", "set_index": "KV1",
+                  "package": "x_kv1_gdn.zip", "variant": None, "card_index": None,
+                  "type": "html5"},
+                 {"dimension": "250x360", "group": "GDN", "set_index": "KV1",
+                  "package": "x_kv1_gdn.zip", "variant": None, "card_index": None,
+                  "type": "html5"},
+                 {"dimension": "240x400", "group": "GDN", "set_index": "KV3",
+                  "package": "x_kv3_gdn.zip", "variant": None, "card_index": None,
+                  "type": "html5"},
+                 {"dimension": "120x600", "group": "afiliacja", "set_index": "KV1",
+                  "package": "x_kv1_afiliacja.zip", "variant": None, "card_index": None,
+                  "type": "html5"}]}
+check("wymiary rozbite na folder i zestaw",
+      F.dimensions_by_folder(PARSED_KV),
+      {"GDN": {"KV1": ["240x400", "250x360"], "KV3": ["240x400"]},
+       "afiliacja": {"KV1": ["120x600"]}})
+check("wymiar obcej paczki NIE trafia do GDN",
+      "120x600" in F.dimensions_by_folder(PARSED_KV)["GDN"].get("KV1", []), False)
+req_kv = F.build_request(PARSED_KV, base, "ady wg schematu wymiar_KV#")
+check("`by_folder` jest w żądaniu roli (a)", "by_folder" in req_kv["zip"], True)
+check("jednostki niosą zestaw i paczkę, z których pochodzą",
+      sorted(req_kv["zip"]["units"][0]),
+      ["card_index", "dimension", "group", "package", "set_index", "type", "variant"])
+req_b = A.build_intent_request(dict(base, ai={"request": req_kv}), "ady wg schematu wymiar_KV#")
+check("...i to samo widzi rola (b)", "by_folder" in (req_b["zip"] or {}), True)
+check("prompt zakazuje brania wymiarów z innego folderu",
+      "ONLY from the folder the remark is about" in A.INTENT_SYSTEM, True)
+check("prompt każe rozwinąć schemat nazw po realnych wymiarach",
+      "expand the pattern over the dimensions" in A.INTENT_SYSTEM, True)
+
 print("\nkontrakt żądania dla roli (b):")
 req = A.build_intent_request(base, "Screening to osobny placement")
 check("żądanie ma uwagi, strukturę, zip i słownik operacji",

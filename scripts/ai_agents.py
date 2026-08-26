@@ -232,6 +232,22 @@ delivery split into GIF/HTML/PNG folders shows up as units with those variants �
 you know which dimensions belong in a placement named after a folder. Do not claim the zip
 contents are unavailable; they are in `zip`.
 
+DIMENSIONS ARE FACTS, NEVER GUESSES. `zip.by_folder` maps every folder/package of the
+delivery to the SETS it holds and the dimensions IN each set, e.g.
+`{"GDN": {"KV1": ["240x400","250x360"], "KV3": [...]}, "afiliacja": {...}}`. A unit's
+`set_index` is its set (`KV1`, `KV3`, `1`, `2`) and `package` is the nested zip it came from.
+  * When a remark asks for ads named by a PATTERN ("ady wg schematu {wymiar}_KV#",
+    "300x250_KV1 i tak dla wszystkich wymiarów"), expand the pattern over the dimensions
+    that folder/set ACTUALLY holds in `zip.by_folder` — emit one add_ad/rename_ad per
+    dimension. Do not ask the user to spell out each name; the pattern plus the package
+    contents fully determine them.
+  * Take dimensions ONLY from the folder the remark is about. A package holds a different
+    set per source (`…_gdn.zip` vs `…_programmatic.zip` vs `…_afiliacja.zip`), and copying
+    a dimension from one into another puts a size in the structure that the source never
+    received. This happened on a live order and had to be redone by hand — the ads carried
+    120x600 and 300x250 while GDN had delivered 240x400/250x360/930x180/980x120.
+  * Never invent a dimension that appears nowhere in `zip.by_folder`.
+
 Rules:
   * Only emit ops that the remarks actually justify. Do not tidy, reorder, or "improve"
     anything they did not mention.

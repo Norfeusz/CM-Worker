@@ -122,7 +122,12 @@ class Orchestrator:
                 else f"CAMPAIGN {self.cid} '{self.campaign['name']}'")
         print(f"{head}  ({'DRY-RUN' if self.dry else 'REAL WRITE'})  "
               f"dates {self.start_date}..{self.end_date}\n")
-        site = proposal["site"]["name"]
+        # Sites are per PLACEMENT, not per order: jedno zlecenie może objąć kilka źródeł
+        # (paczka z folderami `GDN/` i `Programmatic/`), a każde źródło ma swój Site.
+        # `proposal["site"]` zostaje jako Site źródła głównego — fallback dla propozycji
+        # zbudowanych zanim placementy nosiły własny Site.
+        main_site = proposal["site"]["name"]
+        site_of = lambda pl: pl.get("site") or main_site
         line_lp_name = proposal["line"]["lpName"]
 
         # 1) landing pages: resolve/create every DISTINCT LP referenced anywhere in the
@@ -160,15 +165,21 @@ class Orchestrator:
                 self._rec("REGISTER", "campaign-LP", name, lp_id, "added to campaign list")
             lp_ids[name] = lp_id
 
-        # 2) site (reuse; creation is an edge case that needs directory-site linkage)
-        site_id = state["sites_by_name"].get(site)
-        if site_id:
-            self._rec("REUSE", "site", site, site_id)
-        else:
-            r = W.create_site(self.svc, self.pid, site, dry_run=self.dry)
-            site_id = r.get("id", "(new)")
-            self._rec("CREATE", "site", site, r.get("id"),
-                      "Site Directory: znajdź istniejący albo dodaj nowy + podepnij do konta")
+        # 2) sites (reuse; creation is an edge case that needs directory-site linkage).
+        # Każdy Site raz, w kolejności występowania — main_site pierwszy, żeby log czytał
+        # się tak samo jak dotąd dla zwykłego zlecenia jednoźródłowego.
+        site_ids = {}
+        for site in list(dict.fromkeys([main_site] + [site_of(pl) for pl
+                                                      in proposal["placements"]])):
+            site_id = state["sites_by_name"].get(site)
+            if site_id:
+                self._rec("REUSE", "site", site, site_id)
+            else:
+                r = W.create_site(self.svc, self.pid, site, dry_run=self.dry)
+                site_id = r.get("id", "(new)")
+                self._rec("CREATE", "site", site, r.get("id"),
+                          "Site Directory: znajdź istniejący albo dodaj nowy + podepnij do konta")
+            site_ids[site] = site_id
 
         # 3) creatives: ensure EVERY distinct creative name used anywhere in the
         # proposal exists + is campaign-associated (an ad can carry several, e.g.
@@ -191,11 +202,12 @@ class Orchestrator:
 
         # 4) placements + ads (+ each ad's creatives)
         for pl in proposal["placements"]:
+            site = site_of(pl)
             p_id = state["placements"].get((site, pl["name"]))
             if p_id:
-                self._rec("REUSE", "placement", pl["name"], p_id)
+                self._rec("REUSE", "placement", pl["name"], p_id, f"site={site}")
             else:
-                r = W.placement(self.svc, self.pid, self.cid, site_id, pl["name"],
+                r = W.placement(self.svc, self.pid, self.cid, site_ids[site], pl["name"],
                                 self.start_date, self.end_date, dry_run=self.dry)
                 p_id = r.get("id", "(new)")
                 self._rec("CREATE", "placement", pl["name"], r.get("id"), f"site={site}")

@@ -199,6 +199,37 @@
     .form input[type=text], .form input:not([type]), .form textarea, .form select {
       font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:7px; color:var(--ink); }
     .form textarea { resize:vertical; }
+    /* one row per landing page: number, address, keyword, remove */
+    .lp-lbl { font-size:12px; color:var(--muted); font-weight:600; margin-bottom:4px; }
+    .lp-row { display:grid; grid-template-columns:auto minmax(0,1fr) minmax(0,220px) auto auto;
+      gap:6px; align-items:center; margin-bottom:6px; }
+    .lp-row select.lp-src { font:inherit; padding:6px 8px; border:1px solid var(--line);
+      border-radius:7px; color:var(--ink); }
+    .src-multi { display:flex; gap:12px; flex-wrap:wrap; }
+    .src-chk { display:flex; gap:5px; align-items:center; font-size:12px; font-weight:600;
+      color:var(--muted); cursor:pointer; }
+    .lp-no { font-size:11px; font-weight:700; color:var(--muted); min-width:28px; }
+    .lp-row input[type=text] { font:inherit; padding:7px 9px; border:1px solid var(--line);
+      border-radius:7px; color:var(--ink); min-width:0; }
+    @media (max-width:640px) {
+      .lp-row { grid-template-columns:auto minmax(0,1fr) auto; }
+      .lp-row .lp-kw { grid-column:2 / span 2; }
+    }
+    /* edycja nowej linii w karcie „Linie w kampanii” */
+    .line-edit { display:grid; gap:8px; margin-top:8px; padding:10px;
+      border:1px solid var(--line); border-radius:8px; }
+    .line-edit label { display:grid; gap:4px; font-size:12px; color:var(--muted); font-weight:600; }
+    .line-edit input[type=text] { font:inherit; padding:7px 9px; border:1px solid var(--line);
+      border-radius:7px; color:var(--ink); min-width:0; }
+    .line-edit-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    /* zakładki karty „Linie w kampanii" / „Obecna struktura kampanii” */
+    .tabbar { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+    .struct-bar { display:flex; gap:10px; align-items:center; justify-content:space-between;
+      flex-wrap:wrap; margin-bottom:8px; }
+    .struct-hdr { display:flex; gap:8px; align-items:center; cursor:pointer; }
+    .struct-ad { margin:4px 0 4px 14px; padding-left:10px; border-left:2px solid var(--line); }
+    .struct-adname { font-weight:600; font-size:13px; }
+    .struct-cre { font-size:12px; color:var(--muted); margin-left:14px; }
   </style>
 </head>
 <body>
@@ -222,6 +253,9 @@
     }
 
     const Badge = ({ s }) => <span className={"badge " + s}>{s === 'new' ? 'nowe' : 'istnieje'}</span>;
+
+    // Źródła obsługiwane przez narzędzie — klucze z config/source_map.json
+    const SOURCES = ['GDN', 'Meta', 'Facebook', 'DemGen', 'Programmatic', 'Mailing'];
 
     function QuestionsPanel({ questions, answers, onAnswer, onApply, pending, busy }) {
       if (!questions.length) return null;
@@ -277,16 +311,174 @@
       );
     }
 
-    function LinesPanel({ lines, source, existing, folders }) {
+    // Edycja NOWEJ linii: adres LP, nazwa LP i nazwa linii (creative). Świadomie tylko
+    // dla linii dodawanych — przemianowanie linii, którą REUSE'ujemy, nie przemianowałoby
+    // niczego w CM360, tylko odpięło zlecenie od istniejącej linii i utworzyło drugą.
+    function NewLineEditor({ line, onSave, busy }) {
+      const [open, setOpen] = useState(false);
+      const [lpName, setLpName] = useState(line.lpName || '');
+      const [crName, setCrName] = useState(line.creativeName || '');
+      const [url, setUrl] = useState(line.url || '');
+      const [crTouched, setCrTouched] = useState(false);
+      // propozycja mogła zostać przebudowana albo cofnięta pod spodem — pola muszą
+      // pokazywać stan drzewa, a nie to, co user wpisał do poprzedniej wersji
+      useEffect(() => {
+        setLpName(line.lpName || ''); setCrName(line.creativeName || '');
+        setUrl(line.url || ''); setCrTouched(false);
+      }, [line.lpName, line.creativeName, line.url]);
+      // PODPOWIEDŹ, nie źródło prawdy: konwencja linia{N}-{ŹRÓDŁO}[-{słowo}] ->
+      // linia{N}[-{słowo}] żyje w matcher.split_lp_name(). Gdyby się rozjechała, user
+      // nadpisze pole ręcznie — nic nie trafi do CM360 bez jego zatwierdzenia.
+      const suggestCre = name => {
+        const m = /^\s*linia\s*(\d+)(?:[-_]([^-_]+)(?:[-_](.*))?)?\s*$/i.exec(name || '');
+        return m ? 'linia' + m[1] + (m[3] ? '-' + m[3].trim() : '') : null;
+      };
+      const editLp = v => {
+        setLpName(v);
+        if (!crTouched) { const s = suggestCre(v); if (s) setCrName(s); }
+      };
+      const dirty = lpName.trim() !== (line.lpName || '') || crName.trim() !== (line.creativeName || '')
+        || url.trim() !== (line.url || '');
+      const bad = !lpName.trim() || !crName.trim();
+      if (!open) {
+        return <div style={{ marginTop: 4 }}>
+          <button className="btn mini" onClick={() => setOpen(true)}>✏️ zmień adres / nazwę</button>
+        </div>;
+      }
+      return (
+        <div className="line-edit">
+          <label>Adres LP
+            <input type="text" value={url} onChange={e => setUrl(e.target.value)}
+              placeholder="https://www.mbank.pl/lp2/2026/c1/..." /></label>
+          <label>Nazwa LP
+            <input type="text" value={lpName} onChange={e => editLp(e.target.value)} /></label>
+          <label>Nazwa linii (creative)
+            <input type="text" value={crName}
+              onChange={e => { setCrTouched(true); setCrName(e.target.value); }} /></label>
+          <div className="line-edit-bar">
+            <button className="btn primary" disabled={!dirty || bad || busy}
+              onClick={() => { onSave({ lpName: lpName.trim(), creativeName: crName.trim(), url: url.trim() }); setOpen(false); }}>
+              ✔ Zatwierdź zmiany</button>
+            <button className="btn mini" onClick={() => {
+              setLpName(line.lpName || ''); setCrName(line.creativeName || '');
+              setUrl(line.url || ''); setCrTouched(false); setOpen(false);
+            }}>Anuluj</button>
+            <span className="hint">
+              {bad ? 'Obie nazwy są wymagane.'
+                : !url.trim() ? '⚠️ Bez adresu CM360 odrzuci zapis — uzupełnij go przed „Wykonaj w CM360".'
+                : dirty ? 'Nowa nazwa linii zostanie podmieniona w całym drzewie poniżej. Da się cofnąć („↩ Cofnij").'
+                : 'Nic nie zmieniono.'}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    // Podgląd tego, co JEST w kampanii w CM360 na Site tego zlecenia: placement -> ad ->
+    // creative. Dane to `/api/site-structure` (ten sam odczyt, z którego żyją pickery
+    // „dodaj istniejący…"), więc zakładka nie dokłada ani jednego wywołania API poza
+    // ręcznym odświeżeniem.
+    function CampaignStructure({ struct, site, sites, campaign, plan, busy, onReload }) {
+      const [openPl, setOpenPl] = useState({});
+      const pls = (struct && struct.placements) || [];
+      // co z tego dotyka bieżąca propozycja — żeby było widać, gdzie się DOPINAMY,
+      // a gdzie tworzymy coś nowego
+      const inPlan = { pl: new Set(), ad: new Set(), cre: new Set() };
+      (plan || []).forEach(pl => {
+        inPlan.pl.add(pl.name);
+        (pl.ads || []).forEach(a => {
+          inPlan.ad.add(pl.name + '|' + a.name);
+          (a.creatives || []).forEach(c => inPlan.cre.add(pl.name + '|' + a.name + '|' + c.name));
+        });
+      });
+      const nAds = pls.reduce((s, pl) => s + (pl.ads || []).length, 0);
+      const nCre = pls.reduce((s, pl) => s + (pl.ads || []).reduce(
+        (t, a) => t + (a.creatives || []).length, 0), 0);
+      if (!campaign || !campaign.id) {
+        return <div className="hint">Nowa kampania — w CM360 nie ma jeszcze żadnej struktury
+          do podglądu. Wszystko poniżej w drzewie propozycji powstanie od zera.</div>;
+      }
+      return (
+        <div>
+          <div className="struct-bar">
+            <span className="hint">Site <b>{site}</b> · kampania <b>{campaign.name}</b> ·
+              {' '}{pls.length} placementów / {nAds} adów / {nCre} creative</span>
+            <button className="btn mini" disabled={busy} onClick={() => onReload(site)}>
+              {busy ? 'Odświeżam…' : '🔄 odśwież'}</button>
+          </div>
+          {(sites || []).length > 1 && <div className="tabbar" style={{ marginBottom: 8 }}>
+            {sites.map(s => (
+              <button key={s.name} className={"btn " + (s.name === site ? "primary" : "mini")}
+                disabled={busy} onClick={() => onReload(s.name)}>🌐 {s.name}</button>
+            ))}
+          </div>}
+          {!struct && <div className="hint">{busy ? 'Czytam kampanię z CM360…' : 'Brak danych — kliknij „odśwież".'}</div>}
+          {struct && !pls.length && <div className="hint">
+            Na Site <b>{site}</b> ta kampania nie ma jeszcze żadnego placementu — to zlecenie
+            będzie pierwsze.</div>}
+          {pls.map(pl => {
+            const open = openPl[pl.name] !== false;      // domyślnie rozwinięte
+            const used = inPlan.pl.has(pl.name);
+            return (
+              <div className={"line-grp" + (used ? " used" : "")} key={pl.name}>
+                <div className="line-hdr struct-hdr"
+                  onClick={() => setOpenPl(s => ({ ...s, [pl.name]: !open }))}>
+                  <span>{open ? '▾' : '▸'} 📦 {pl.name}</span>
+                  <span className="hint">{(pl.ads || []).length} adów</span>
+                  {used && <span className="tag-use">← jest w tym zleceniu</span>}
+                </div>
+                {open && (pl.ads || []).map(a => (
+                  <div className="struct-ad" key={a.name}>
+                    <div className="struct-adname">
+                      📐 {a.name}
+                      {inPlan.ad.has(pl.name + '|' + a.name) &&
+                        <span className="tag-use">← jest w tym zleceniu</span>}
+                    </div>
+                    {(a.creatives || []).map(c => (
+                      <div className="struct-cre" key={c}>
+                        🖼️ {c}
+                        {inPlan.cre.has(pl.name + '|' + a.name + '|' + c) &&
+                          <span className="tag-use">← dopinamy tę linię</span>}
+                      </div>
+                    ))}
+                    {!(a.creatives || []).length &&
+                      <div className="struct-cre hint">(ad bez creative)</div>}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    function LinesPanel({ lines, source, existing, folders, onUpdateLine, busy,
+                          struct, site, sites, campaign, plan, structBusy, onReloadStruct }) {
+      const [tab, setTab] = useState('lines');
       // an order can carry SEVERAL landing pages; they may share a line number (same
       // page, different utm) or be separate lines
       const curNos = [...new Set(lines.map(l => l.number))];
       const usedNos = [...new Set(lines.filter(l => l.reusedLine).map(l => l.number))];
       const folderOf = idx => Object.keys((folders && folders.map) || {})
         .filter(f => folders.map[f] === idx);
+      if (tab === 'struct') {
+        return (
+          <div className="card">
+            <div className="tabbar">
+              <button className="btn mini" onClick={() => setTab('lines')}>🔗 Linie w kampanii</button>
+              <button className="btn primary" onClick={() => setTab('struct')}>🗂️ Obecna struktura kampanii</button>
+            </div>
+            <CampaignStructure struct={struct} site={site} sites={sites} campaign={campaign}
+              plan={plan} busy={structBusy} onReload={onReloadStruct} />
+          </div>
+        );
+      }
       return (
         <div className="card">
-          <div className="lines-title">🔗 Linie w kampanii</div>
+          <div className="tabbar">
+            <button className="btn primary" onClick={() => setTab('lines')}>🔗 Linie w kampanii</button>
+            <button className="btn mini" onClick={() => setTab('struct')}>🗂️ Obecna struktura kampanii</button>
+          </div>
 
           <div className="curbox">
             <div className="lead">
@@ -302,12 +494,22 @@
               return (
                 <div key={i} style={{ marginTop: i ? 8 : 0 }}>
                   <div>Creative: <b>{line.creativeName}</b> · Landing page: <b>{line.lpName}</b>
-                    <span className="hint"> · linia {line.number} · źródło {source}
+                    <span className="hint"> · linia {line.number} · źródło {line.source || source}
                       {lines.length === 1 ? ' · ścieżka ' + line.path : ''}</span></div>
                   {line.url && <div><a className="url" href={line.url} target="_blank">{line.url}</a></div>}
+                  {line.keywordIgnored && <div className="hint">
+                    ⚠️ Słowo klucza „{line.keyword}" pominięte — ten adres jest już
+                    w kampanii jako <b>{line.lpName}</b>, a zmiana nazwy utworzyłaby
+                    drugie LP na ten sam adres. Zmień nazwę w CM360 albo użyj innego adresu.
+                  </div>}
                   {lines.length > 1 && <div className="hint">
                     {fs.length ? `materiały z folderu: ${fs.join(', ')}` : 'materiały: wszystkie z paczki'}
                   </div>}
+                  {onUpdateLine && (line.reusedLine
+                    ? <div className="hint">Linia istnieje w kampanii — nazwy i adresu nie
+                        zmieniamy tutaj (zmiana odpięłaby zlecenie od tej linii).</div>
+                    : <NewLineEditor line={line} busy={busy}
+                        onSave={next => onUpdateLine(i, next)} />)}
                 </div>
               );
             })}
@@ -435,11 +637,44 @@
     }
 
     function InputPanel({ onResult, rebuildRef, onCanRebuild, onBusy }) {
-      // one address per line: several LPs can belong to one order (all in the same
-      // campaign), e.g. the same creatives tagged for prospecting and remarketing
-      const [linkText, setLinkText] = useState('');
-      const links = linkText.split('\n').map(s => s.trim()).filter(Boolean);
+      // One ROW per landing page: several LPs can belong to one order (all in the same
+      // campaign), e.g. the same creatives tagged for lookalike and remarketing. Each row
+      // carries an optional keyword that becomes the LP label (linia3-FB-lookalike) —
+      // without it the label is derived from whatever tells the addresses apart, which
+      // for a long utm_campaign gives an unusable name.
+      const [lps, setLps] = useState([{ url: '', kw: '', src: '' }]);
+      const setLp = (i, patch) => setLps(xs => xs.map((x, j) => j === i ? { ...x, ...patch } : x));
+      const addLp = () => setLps(xs => [...xs, { url: '', kw: '', src: '' }]);
+      const delLp = i => setLps(xs => xs.length > 1 ? xs.filter((_, j) => j !== i) : [{ url: '', kw: '', src: '' }]);
+      // Pasting a list of addresses into ONE field must not concatenate them: an <input>
+      // strips newlines silently, so intercept the paste and spread it over rows.
+      const pasteLp = (i, e) => {
+        const txt = (e.clipboardData || window.clipboardData).getData('text') || '';
+        const parts = txt.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+        if (parts.length < 2) return;              // ordinary paste, let it through
+        e.preventDefault();
+        setLps(xs => {
+          const out = xs.slice();
+          parts.forEach((url, k) => {
+            if (i + k < out.length) out[i + k] = { ...out[i + k], url };
+            else out.push({ url, kw: '', src: '' });
+          });
+          return out;
+        });
+      };
+      // keywords must stay positionally aligned with links, so filter ROWS, not urls
+      const rows = lps.filter(x => x.url.trim());
+      const links = rows.map(x => x.url.trim());
+      const keywords = rows.map(x => x.kw.trim());
       const [source, setSource] = useState('GDN');
+      // Kilka źródeł w JEDNEJ paczce (foldery `GDN/` + `Programmatic/`). Źródło z listy
+      // wyżej jest GŁÓWNE: nazywa zlecenie i bierze materiały spoza folderów źródeł.
+      const [extraSrc, setExtraSrc] = useState([]);
+      const sources = [source, ...extraSrc.filter(s => s !== source)];
+      const multiSrc = sources.length > 1;
+      // adres należy do konkretnego źródła (jego LP dostanie ten sufiks); puste = główne
+      const linkSources = {};
+      rows.forEach((r, i) => { if (multiSrc && r.src && sources.includes(r.src)) linkSources[i] = r.src; });
       const [message, setMessage] = useState('');
       const [file, setFile] = useState(null);
       const [busy, setBusy] = useState(false);
@@ -501,7 +736,9 @@
           });
           const resp = await fetch('/api/build-proposal', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ links, source, message, zipB64: b64, zipName: file.name, ...(extra || {}) }),
+            body: JSON.stringify({ links, keywords, source, sources, linkSources,
+                                   message, zipB64: b64, zipName: file.name,
+                                   ...(extra || {}) }),
           });
           const data = await resp.json();
           if (data.error) fail(data.error);
@@ -522,19 +759,69 @@
         <div className="card">
           <div className="lines-title">📝 Nowe zlecenie</div>
           <div className="form">
-            <label>Adresy LP <span className="hint">— jeden na linię; wszystkie trafią do tej samej kampanii</span>
-              <textarea rows={Math.min(6, Math.max(2, links.length + 1))} value={linkText}
-                onChange={e => setLinkText(e.target.value)}
-                placeholder={"https://www.mbank.pl/lp2/2026/c1/...?utm_medium=prospecting\n"
-                  + "https://www.mbank.pl/lp2/2026/c1/...?utm_medium=remarketing"} /></label>
-            {links.length > 1 && <div className="hint">
-              {links.length} adresy — narzędzie samo spróbuje przypisać foldery z zipa do
-              poszczególnych stron; materiały bez pasującego folderu trafią pod każdą z nich.
-            </div>}
-            <label>Źródło
+            <div>
+              <div className="lp-lbl">Adresy LP <span className="hint">— jedno okienko na
+                adres; wszystkie trafią do tej samej kampanii</span></div>
+              {lps.map((row, i) => (
+                <div className="lp-row" key={i}>
+                  <span className="lp-no">LP{i + 1}</span>
+                  <input type="text" value={row.url} onPaste={e => pasteLp(i, e)}
+                    onChange={e => setLp(i, { url: e.target.value })}
+                    placeholder={i ? 'https://www.mbank.pl/lp2/2026/c1/...?utm_medium=remarketing'
+                      : 'https://www.mbank.pl/lp2/2026/c1/...?utm_medium=lookalike'} />
+                  <input type="text" className="lp-kw" value={row.kw}
+                    onChange={e => setLp(i, { kw: e.target.value })}
+                    placeholder={i ? 'słowo klucza (np. remarketing)' : 'słowo klucza (np. lookalike)'} />
+                  {multiSrc && <select className="lp-src" value={row.src || source}
+                    onChange={e => setLp(i, { src: e.target.value })}>
+                    {sources.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>}
+                  <button className="btn mini" title="Usuń ten adres"
+                    disabled={lps.length === 1 && !row.url && !row.kw}
+                    onClick={() => delLp(i)}>✕</button>
+                </div>
+              ))}
+              <button className="btn mini" onClick={addLp}>➕ dodaj adres</button>
+              <div className="hint" style={{ marginTop: 6 }}>
+                Słowo klucza trafia do nazwy: <code>linia3-FB-lookalike</code> (creative
+                <code>linia3-lookalike</code>). Puste = narzędzie wyprowadzi etykietę z tego,
+                czym adresy się różnią — przy długim <code>utm_campaign</code> wychodzi z tego
+                nazwa, której nikt nie chce.
+              </div>
+              {links.length > 1 && <div className="hint">
+                {links.length} adresy — narzędzie samo spróbuje przypisać foldery z zipa do
+                poszczególnych stron; materiały bez pasującego folderu trafią pod każdą z nich.
+                Słowo klucza pomaga też w tym dopasowaniu (folder <code>Lookalike/</code> ↔
+                słowo <code>lookalike</code>).
+              </div>}
+            </div>
+            <label>Źródło {multiSrc && <span className="hint">— główne; nazywa zlecenie
+              i bierze materiały spoza folderów źródeł</span>}
               <select value={source} onChange={e => setSource(e.target.value)}>
-                {['GDN', 'Meta', 'Facebook', 'DemGen', 'Programmatic', 'Mailing'].map(s => <option key={s}>{s}</option>)}
+                {SOURCES.map(s => <option key={s}>{s}</option>)}
               </select></label>
+            <div>
+              <div className="lp-lbl">Dodatkowe źródła w tej paczce <span className="hint">
+                — gdy zip ma osobne foldery per źródło (np. <code>GDN/</code> +
+                <code>Programmatic/</code>); każde dostanie swój Site i swoje LP</span></div>
+              <div className="src-multi">
+                {SOURCES.filter(s => s !== source).map(s => (
+                  <label key={s} className="src-chk">
+                    <input type="checkbox" checked={extraSrc.includes(s)}
+                      onChange={e => setExtraSrc(xs => e.target.checked
+                        ? [...xs, s] : xs.filter(x => x !== s))} />
+                    {s}
+                  </label>
+                ))}
+              </div>
+              {multiSrc && <div className="hint" style={{ marginTop: 4 }}>
+                Zlecenie obejmie {sources.length} źródła: <b>{sources.join(' + ')}</b>.
+                Każdy adres ma teraz swoje źródło (lista w wierszu) — LP powstanie osobno
+                dla każdego, z tym samym numerem linii: <code>linia1-{sources[0]}</code>,
+                {' '}<code>linia1-{sources[1]}</code>. Źródło bez własnego adresu użyje
+                adresu źródła głównego.
+              </div>}
+            </div>
             <div>
               <button className="btn mini" onClick={() => setShowSites(s => !s)}>
                 {showSites ? '▾' : '▸'} Nie ma źródła na liście? Szukaj/dodaj site (jak w CM)</button>
@@ -784,6 +1071,22 @@
       // returns InputPanel's runAnalyze promise so callers can show their own progress
       const rebuildOn = extra => { setChangeCamp(false); setCommitRes(null); return rebuildRef.current(extra); };
       const [siteStruct, setSiteStruct] = useState(null);  // existing {placements:[{name,ads:[{name,creatives}]}]}
+      const [structBusy, setStructBusy] = useState(false);
+      const [structSite, setStructSite] = useState(null);   // który Site pokazuje zakładka
+      // Stan kampanii w CM360 dla Site tego zlecenia. Służy DWÓM rzeczom: pickerom
+      // „dodaj istniejący placement/ad" i zakładce „Obecna struktura kampanii".
+      // Osobna funkcja, bo user musi móc odświeżyć podglad bez przebudowy propozycji
+      // (ktoś mógł dotrafficować coś w CM w międzyczasie).
+      function fetchSiteStruct(prop, siteName) {
+        const np = prop || p;
+        const site = siteName || (np && np.site && np.site.name);
+        setStructSite(site || null);
+        if (!(np && np.campaign && np.campaign.id && site)) { setSiteStruct(null); return; }
+        setStructBusy(true);
+        fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(site)}`)
+          .then(r => r.json()).then(setSiteStruct).catch(() => {})
+          .then(() => setStructBusy(false));
+      }
       // `undoable`: podmiana struktury, którą da się cofnąć (wynik agenta, przebudowa po
       // odpowiedziach o folderach, zmiana kampanii). Świeża analiza i „Wyczyść" zaczynają
       // od zera, więc historia poprzedniego zlecenia byłaby myląca — czyścimy ją.
@@ -796,10 +1099,7 @@
         setFoldersDirty(false);
         setPlanFresh(false);       // inna struktura = poprzedni plan nic nie znaczy
         setTagsFile(null);         // arkusz dotyczył poprzedniego zlecenia
-        if (np && np.campaign && np.campaign.id && np.site) {
-          fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(np.site.name)}`)
-            .then(r => r.json()).then(setSiteStruct).catch(() => {});
-        }
+        fetchSiteStruct(np);
       }
 
       // ---- question answers drive the tree ----
@@ -820,6 +1120,18 @@
       // struktury — użytkownik ma widzieć, że przycisk był i dlaczego przestał działać,
       // a nie zgadywać, gdzie zniknął.
       const planSeen = planFresh || !!(commitRes && commitRes.dryRun && commitRes.log);
+
+      // Zlecenie może objąć kilka źródeł, a każde ma swój Site — drzewo grupuje
+      // placementy po Site. Lista budowana z placementów (nie tylko z `sites`), żeby
+      // placement dołożony ręcznie albo propozycja wczytana z JSON-a nie zniknęły.
+      const siteGroups = (() => {
+        if (!p) return [];
+        const meta = {};
+        (p.sites || []).forEach(s => { meta[s.name] = s; });
+        const names = [...new Set([p.site.name,
+          ...p.placements.map(pl => pl.site || p.site.name)])];
+        return names.map(n => meta[n] || { name: n, status: p.site.status });
+      })();
 
       const questions = (p && p.questions) || [];
       const groupsQ = questions.find(q => q.id === 'groups');
@@ -892,6 +1204,31 @@
         let ti = toIdx;
         if (from.pl === toPl && from.idx < toIdx) ti -= 1;
         np.placements[toPl].ads.splice(ti, 0, moved);
+        commit(np);
+      }
+
+      // Zatwierdzenie edycji nowej linii z karty „Linie w kampanii".
+      // Nazwa linii musi przejść przez CAŁE drzewo, bo creative o tej nazwie wisi na
+      // wielu adach — to ta sama semantyka, co `rename_creative_all` u agenta (b):
+      // przemianuj tam, gdzie ta linia JEST, i nigdzie jej nie dokładaj.
+      function updateLine(idx, next) {
+        const np = clone();
+        const cur = (np.lines && np.lines[idx]) || (idx === 0 ? np.line : null);
+        if (!cur) return;
+        const oldCre = cur.creativeName, oldLp = cur.lpName;
+        const newCre = next.creativeName || oldCre;
+        const newLp = next.lpName || oldLp;
+        const newUrl = next.url || '';
+        cur.creativeName = newCre; cur.lpName = newLp; cur.url = newUrl;
+        // `line` jest w JSON-ie propozycji ODDZIELNĄ kopią pierwszej linii, a orkiestrator
+        // bierze z niej domyślne LP kampanii — bez tego zapis poszedłby ze starą nazwą
+        if (idx === 0 && np.line && np.line !== cur) {
+          np.line = { ...np.line, creativeName: newCre, lpName: newLp, url: newUrl };
+        }
+        np.placements.forEach(pl => pl.ads.forEach(a => a.creatives.forEach(cr => {
+          if (cr.name === oldCre) cr.name = newCre;
+          if (cr.lpName === oldLp) { cr.lpName = newLp; cr.lpUrl = newUrl; }
+        })));
         commit(np);
       }
 
@@ -1160,8 +1497,12 @@
                   {canRebuild && <button className="btn link mini" style={{ marginLeft: 8 }}
                     onClick={() => setChangeCamp(s => !s)}>
                     {changeCamp ? '▾ ukryj' : '🔄 zmień kampanię'}</button>}</span>
-                <span className="k">Źródło → Site</span>
-                <span><b>{p.source}</b> <span className="arrow">→</span> {p.site.name} <Badge s={p.site.status} /></span>
+                <span className="k">{siteGroups.length > 1 ? 'Źródła → Site' : 'Źródło → Site'}</span>
+                <span>{siteGroups.map((st, i) => (
+                  <span key={st.name}>{i ? ' · ' : ''}
+                    <b>{st.source || p.source}</b> <span className="arrow">→</span> {st.name}
+                    {' '}<Badge s={st.status} /></span>
+                ))}</span>
               </div>
               {changeCamp && <div className="qcard" style={{ marginTop: 10 }}>
                 <div className="hint" style={{ marginBottom: 8 }}>
@@ -1177,7 +1518,12 @@
             <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer}
               onApply={applyFolderAnswers} pending={foldersDirty} busy={!!pending} />
             <LinesPanel lines={p.lines || [p.line]} source={p.source}
-              existing={p.existingLines || []} folders={p.lpFolders} />
+              existing={p.existingLines || []} folders={p.lpFolders}
+              onUpdateLine={updateLine} busy={!!pending}
+              struct={siteStruct} site={structSite || (p.site && p.site.name)}
+              sites={siteGroups} campaign={p.campaign}
+              plan={p.placements} structBusy={structBusy}
+              onReloadStruct={s => fetchSiteStruct(null, s)} />
 
             <div className="card">
               <div className="toolbar" style={{ marginBottom: 12 }}>
@@ -1286,9 +1632,13 @@
               )}
 
               <div className="node">
-                <div className="site">
-                  <div className="row">🌐 {p.site.name} <Badge s={p.site.status} /></div>
-                  {p.placements.map((pl, pi) => isVisible(pl) && (
+                {siteGroups.map(st => (
+                <div className="site" key={st.name}>
+                  <div className="row">🌐 {st.name} <Badge s={st.status} />
+                    {siteGroups.length > 1 && st.source &&
+                      <span className="hint"> · źródło {st.source}</span>}</div>
+                  {p.placements.map((pl, pi) => (pl.site || p.site.name) === st.name
+                    && isVisible(pl) && (
                     <div className="placement" key={pi}
                       onDragOver={e => { e.preventDefault(); }}
                       onDrop={() => onDrop(pi, pl.ads.length)}>
@@ -1338,6 +1688,7 @@
                     </div>
                   ))}
                 </div>
+                ))}
               </div>
             </div>
 

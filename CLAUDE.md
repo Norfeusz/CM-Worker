@@ -63,10 +63,12 @@ po poprawce).
 jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkownika o dwuklik na
 `start.bat`; własny proces stawiaj tylko na czas konkretnej weryfikacji.
 Testy offline: `py tests/test_matcher.py`, `test_proposal.py`, `test_orchestrate.py`,
-`test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py` (**277/277 zielone na
-05.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić, że nic się nie
-popsuło). Rozkład: matcher 45, proposal 58, orchestrate 39, create_site 15, ai_agents 97,
-export_tags 23.
+`test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`, `test_parse_zip.py`
+(**368/368 zielone na 10.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 71, proposal 91, orchestrate 44, create_site 15,
+ai_agents 104, export_tags 23, parse_zip 20.
+`test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
+dostaw bez trzymania plików klienta w repo.
 `test_ai_agents.py` stawia udawany webhook n8n na localhoście, więc testuje też transport
 i odrzucanie złych odpowiedzi — bez sieci i bez klucza API.
 
@@ -151,10 +153,15 @@ start.example.bat    # szablon dla nowego stanowiska
 ```
 
 ### Endpointy `scripts/serve.py` (GET serwuje też statyczne pliki z `ui/`)
-- `POST /api/build-proposal` — `{link|links[], source, message, zipB64|zipPath, campaignId?,
-  newCampaign?, folderMap?}` → kontrakt propozycji.
+- `POST /api/build-proposal` — `{link|links[], keywords[]?, source, sources[]?,
+  linkSources{}?, message, zipB64|zipPath, campaignId?, newCampaign?, folderMap?}` →
+  kontrakt propozycji. `sources[]` = wszystkie źródła zlecenia (główne = `source`),
+  `linkSources` = `{indeksAdresu: źródło}` (patrz sekcja „Kilka źródeł").
   `links[]` = kilka LP w jednym zleceniu (wszystkie do TEJ SAMEJ kampanii; różni advertiserzy
-  są odrzucani). `folderMap` = odpowiedzi usera „folder → który LP" (`"0"`/`"1"`/`"all"`),
+  są odrzucani). `keywords[]` = słowo klucza usera dla każdego adresu (pozycyjnie), patrz
+  sekcja o konwencji nazw. **Deduplikacja adresów dzieje się w `matcher.dedupe_links`
+  PRZED czymkolwiek** — wszystko dalej (słowa klucza, etykiety folderów) jest keyowane
+  pozycją, więc zwinięcie powtórzonego adresu później przesunęłoby te dane o jeden. `folderMap` = odpowiedzi usera „folder → który LP" (`"0"`/`"1"`/`"all"`),
   echoowane w `lpFolders.override`, żeby UI nie trzymał własnego ukrytego stanu.
   `campaignId` to override, gdy user ręcznie wybrał kampanię; `newCampaign` to nazwa nowej.
 - `POST /api/apply-suggestions` — `{proposal, suggestions}` → sugestie roli (a) tłumaczone na
@@ -169,7 +176,8 @@ start.example.bat    # szablon dla nowego stanowiska
 - `POST /api/commit` — `{proposal, dryRun}` → uruchamia orkiestrator (dry-run albo realny zapis + eksport tagów)
 - `GET /api/sites?q=` — kaskada wyszukiwania site (konto → Site Directory), jak natywny dialog CM
 - `POST /api/create-site` — plan (dry-run) dodania nowego site
-- `GET /api/site-structure?campaignId=&site=` — istniejące placementy/ady/creative dla pickerów w UI
+- `GET /api/site-structure?campaignId=&site=` — istniejące placementy/ady/creative; karmi
+  pickery „dodaj istniejący…" **oraz** zakładkę „Obecna struktura kampanii"
 - `GET /api/campaigns` — wszystkie kampanie advertisera testowego (przeglądarka kampanii przy braku dopasowania)
 - `GET /api/campaign-lps?campaignId=` — strony docelowe danej kampanii (leniwie ładowane w UI)
 
@@ -266,7 +274,65 @@ jednoznaczne (test regresyjny w `test_matcher.py`).
 
 Konwencja żyje w **jednym miejscu**: `matcher.lp_name()`, `matcher.creative_name()`,
 `matcher.split_lp_name()`. Nie buduj tych nazw ręcznie w innych plikach — prompt roli (b)
-opisuje ją słownie i też został zaktualizowany.
+opisuje ją słownie i też został zaktualizowany. (Wyjątek świadomy: `NewLineEditor` w UI
+podpowiada nazwę creative z nazwy LP tym samym wzorcem — to tylko **podpowiedź** w polu,
+które user może nadpisać, więc rozjazd nie może niczego po cichu zepsuć.)
+
+**ŹRÓDŁO w nazwie to SKRÓT z configu, nie klucz źródła** (06.08.2026). `lpSource`
+w `source_map.json`: Facebook i Meta (dwa klucze, jeden Site) → `FB`; brak wpisu = klucz
+źródła jak dotąd (`GDN`). Czytane przez `build_proposal.lp_source()`; `serve` podaje skrót
+do `resolve_lines` i `detect_line_conflict`, a pełny klucz zostaje do Site/placementów/adKey.
+Naprawia to przy okazji wykrywanie konfliktu linii, które porównywało „Facebook" z „FB"
+z żywego konta i **nigdy nie mogło trafić**.
+
+**SŁOWO KLUCZA per adres** (06.08.2026, życzenie usera). Osobne okienko przy każdym LP
+w UI; `matcher.keyword_label()` sanityzuje (spacje→myślnik, interpunkcja wycięta, wielkość
+liter i polskie znaki ZOSTAJĄ — to nazwa wybrana przez człowieka, nie forma do porównań).
+Słowo klucza **bije każdą etykietę automatyczną i jest stosowane zawsze**, także dla
+jednego adresu bez kolizji. Tym zamknięty jest punkt 12 kolejki (`utm_campaign=
+refinansowanie2026` dawał `linia2-GDN-refinansowanie2026`, user chciał `refinans`).
+Wzmacnia też dopasowanie folderów zipa do LP (folder `Lookalike/` ↔ słowo `lookalike`).
+Jedno ograniczenie, jawnie raportowane w UI (`line.keywordIgnored`): gdy adres JUŻ jest
+LP w kampanii, słowo klucza jest odrzucane — `_ensure_lp` szuka po nazwie, więc
+przemianowanie utworzyłoby drugie LP na ten sam adres.
+
+## Kilka ŹRÓDEŁ w jednym zleceniu (06.08.2026)
+
+Paczka rozdzielona folderami źródeł (`GDN/` + `Programmatic/`) jest trafficowana raz.
+W UI: lista „Źródło" to źródło **główne**, obok checkboxy „Dodatkowe źródła w tej paczce",
+a przy każdym adresie dochodzi lista źródeł. Kontrakt: `sources[]` + `linkSources{}`.
+
+Rozstrzygnięcia (decyzje usera, nie moje domysły):
+* **LP per źródło, ten sam numer linii** — `linia1-GDN` obok `linia1-Programmatic`,
+  najczęściej ten sam adres różniący się tylko parametrami. Creative zostaje JEDEN
+  (`linia1` — bez źródła), więc placementy obu źródeł linkują tę samą kreację, ale
+  każdy do LP swojego źródła. Źródło bez własnego adresu bierze adres źródła głównego.
+* **Foldery `linia1/`, `linia2/` w paczce to NIE strony docelowe**, a dwa komplety tych
+  samych wymiarów: jedno LP, rozróżnienie na adzie (`300x250_1`, `300x250_2`).
+  `parse_zip._set_index()` + sufiks w `build_proposal`. Wcześniej parser zwijał oba
+  komplety w jeden ad i **połowa materiałów przepadała bez śladu**.
+
+Mechanika (rzeczy, które się na tym wywracały):
+* **Orkiestrator brał JEDEN Site** (`proposal["site"]`) dla wszystkich placementów i
+  ignorował `pl["site"]` — czyli poprawnie zbudowane drzewo dwóch źródeł zapisałoby się
+  na jednym Site. Teraz Site jest rozstrzygany per placement (`site_of`), a klucze
+  `state["placements"]`/`state["ads"]` i tak są per Site, więc ad o tej samej nazwie na
+  drugim Site powstaje na nowo, zamiast „REUSE" cudzego.
+* **Folder źródła nie może być kandydatem na folder LP.** Adresy nosiły
+  `utm_source=gdn` / `=programmatic`, więc `match_folders_to_lps` przypisał `GDN/` do
+  LP1, a `Programmatic/` do LP2; oba zostały „zużyte" jako rozróżnienie LP, przestały być
+  grupami źródeł i **drugie źródło zniknęło z drzewa bez słowa**. Wyłapane dopiero na
+  żywym teście w przeglądarce — offline wyglądało dobrze.
+* **`resolve_lines` dedupuje po (adres, źródło)**, nie po samym adresie; rodzeństwem
+  wymagającym etykiety są wpisy o tym samym numerze **i** źródle. Istniejące LP na tym
+  adresie jest używane tylko gdy jego nazwa niesie TO SAMO źródło.
+* **`folderMap` jest keyowany ADRESAMI**, a `lines` ma wpis na (adres × źródło) — stąd
+  `line_addresses` w `build_proposal`/`build_questions`.
+* Ten sam Site + ta sama nazwa placementu = jeden węzeł w propozycji (scalanie w
+  `build_proposal`); wcześniej folder źródła obok materiałów luzem dawał dwa identyczne.
+
+Programmatic jest tu obsłużony jak zwykłe źródło trackingowe (1×1). **Realny upload
+assetów dla programmatic nadal NIE jest zrobiony** — patrz punkt 7 kolejki.
 
 ## Model domenowy (zwalidowany na żywych danych CM360)
 
@@ -318,6 +384,22 @@ Nazwy Ad/Placement pochodzą z konwencji zip+source; linie/audience pochodzą z 
   `App.rebuildRef` trzyma `runAnalyze` z `InputPanel`, więc nie trzeba wpisywać danych ponownie)
 - ✅ Propozycja na *nowej* kampanii (nazwa z UI, prefill z resztą ścieżki URL) — plan zapisu
   z `CREATE campaign` sprawdzony w dry-run; realnego zapisu jeszcze nie robiliśmy
+- ✅ Formularz zlecenia: **osobne okienko na każdy adres LP + słowo klucza** przy każdym
+  (wklejenie wielu linii do jednego pola rozbija je na wiersze — `<input>` po cichu zjada
+  znaki nowej linii, więc `paste` jest przechwytywany)
+- ✅ **Edycja nowej linii w karcie „Linie w kampanii"** (`NewLineEditor`): adres LP, nazwa LP
+  i nazwa linii + „✔ Zatwierdź zmiany". Nazwa linii jest podmieniana w CAŁYM drzewie (ta sama
+  semantyka co `rename_creative_all` agenta (b): przemianuj tam, gdzie linia JEST, nigdzie
+  nie dokładaj), razem z `lpName`/`lpUrl` na creative i z `proposal.line` (osobna kopia
+  w JSON-ie, z której orkiestrator bierze domyślne LP). Wpięte w `commit`, więc działa
+  „↩ Cofnij". Dla linii REUSE'owanej edycji nie ma — odpięłaby zlecenie od istniejącej linii
+- ✅ **Kilka źródeł w jednym zleceniu** (osobna sekcja niżej): własny Site per źródło,
+  LP per źródło, drzewo grupowane po Site, zakładka struktury z przełącznikiem Site
+- ✅ **Zakładka „🗂️ Obecna struktura kampanii"** w karcie linii (`CampaignStructure`):
+  podgląd tego, co JEST w CM360 na Site zlecenia — placement → ad → creative, zwijane,
+  z „🔄 odśwież" i znacznikami, które elementy dotyka bieżąca propozycja. Karmi ją ten sam
+  `/api/site-structure`, z którego żyją pickery „dodaj istniejący…" (`fetchSiteStruct`
+  w App), więc zakładka **nie dokłada wywołań API** poza ręcznym odświeżeniem
 - ✅ Okienko uwag → `/api/refine` (AI podłączone, obie role działają na żywym Gemini)
 - ✅ Repo na GitHub: **github.com/Norfeusz/CM-Worker** (prywatne)
 
@@ -379,6 +461,61 @@ jako `image`, więc z typu ich nie rozróżnisz. Alias `jpg→png` jest w config
 tylko wtedy, gdy paczka sama rozdziela formaty folderami — inaczej dopisywałby `_html` do
 każdego ada zwyczajnej paczki jednoformatowej (ta pomyłka wyszła w testach).
 
+**Nazwa placementu bierze się z FOLDERU tej porcji materiałów, nie z `format_hint` całego
+zipa** (06.08.2026, zgłoszenie z paczki `META kreacje OF Biedronka.zip`: `statyki/` +
+`karuzela/` dawały DWA placementy „karuzela"). Przyczyna: `karuzela` jest w
+`GROUP_KEYWORDS` parsera, więc trafia do `groups`, a `statyki` nie — wpadał do resztek,
+którym nazwę dawał `format_hint` **całego** zipa („Karuzela", bo słowo jest w nazwach
+plików); drugi placement brał surową nazwę folderu, stąd mała litera. Teraz
+`build_proposal.placement_for()` mapuje nazwę folderu przez `placementByFormat` źródła
+(case-insensitive) i **to** nazywa placement. Do Facebook/Meta doszły klucze `Statyki`
+i `Animacje`. Konsekwencje, o które łatwo się potknąć:
+* folder będący formatem TEGO źródła nie jest już „obcą grupą": placement ma `group: null`
+  i **nie ma o co pytać** — pytanie `groups` go pomija. Wcześniej pytało o niego jak o obce
+  źródło, a jego domyślna odpowiedź zaznaczała tylko PIERWSZĄ grupę, więc paczka
+  `karuzela/` + `posty/` po cichu gubiła drugi placement z drzewa;
+* folder zużyty jako rozróżnienie LP nadal NIE dzieli placementów, nawet gdy nazywa się
+  jak format (test regresyjny w `test_proposal.py`);
+* nieznany folder resztek dalej dostaje nazwę z `format_hint` — inaczej każda nietypowa
+  nazwa folderu robiłaby własny placement.
+
+## Zagnieżdżone zipy: PACZKA vs JEDEN BANER (10.08.2026 — kosztowna pomyłka)
+
+Zagnieżdżony `.zip` znaczy w dostawach dwie różne rzeczy i mieszanie ich gubi materiały:
+* **jeden baner na zip** — wymiar stoi we WŁASNEJ nazwie zipa (`160x600_gdn.zip`,
+  `500x400.zip`) → jedna jednostka, jak dotąd;
+* **cała paczka na zip** — `mbank_…_kv1_gdn.zip` zawierający `240x400/`, `250x360/`, …
+  → **jednostka na każdy wymiar w środku** (`_package_dims`).
+
+Do 10.08.2026 parser stosował pierwszą regułę zawsze i brał z paczki **pierwszy napotkany
+wymiar**. Realny skutek (zgłoszenie z żywej sesji): paczka z trzema podpaczkami
+(`_gdn`/`_afiliacja`/`_programmatic`) × dwa key visuale raportowała `dimensions:
+['120x600','240x400','300x250']` i `groups: []` — z 8 wymiarów GDN został jeden, a agent
+AI dostał trzy wymiary z trzech RÓŻNYCH źródeł i z nich zbudował ady. **Agent nie zgadywał
+— parser go wprowadził w błąd.** Wniosek na przyszłość: gdy agent oddaje złą strukturę,
+najpierw sprawdź, co dostał w `ai.request.zip`.
+
+Powiązane reguły, wszystkie z tego samego zgłoszenia:
+* **Źródło czytane z nazwy PACZKI**, nie z całego zipa: `…_kv1_gdn.zip` → grupa `GDN`,
+  `…_afiliacja.zip` → grupa `afiliacja` (nieznane źródło → ostatni człon nazwy, żeby KV1
+  i KV3 tej samej paczki należały do JEDNEJ grupy). Bez tego materiały afiliacji wpadały
+  do zlecenia GDN jako „reszta".
+* **Nazwa zipa z JEDNYM banerem nie tworzy grupy** — niesie wymiar, nie źródło. Przez
+  chwilę tworzyła (`gdn 1` obok folderu `GDN`, grupy o nazwach wymiarów); wyłapane na
+  próbkach z `data/samples`, patrz `test_parse_zip.py`.
+* **Folder `KV{N}_…` to ZESTAW materiałów**, jak `linia{N}`: jedno LP, jedna kreacja,
+  rozróżnienie na adzie (`240x400_KV1`). `_set_label()` obsługuje oba wzorce. Uwaga na
+  regex: po `KV1` stoi `_`, które **jest** znakiem słowa, więc `\b` tam nie trafia —
+  wzorzec używa `(?![0-9])`.
+* **Pytanie „które jeszcze kodujemy?" nie zaznacza już NIC domyślnie.** Wcześniejszy
+  domyślny `[groups[0]]` po cichu wpuszczał pierwszą obcą grupę do zlecenia.
+* **Żądanie do agenta niesie `zip.by_folder`** (`{folder: {zestaw: [wymiary]}}`) oraz
+  `set_index`/`package` na jednostkach, a prompt roli (b) zakazuje brania wymiaru z innego
+  folderu i każe rozwijać schemat nazw (`{wymiar}_KV#`) po realnych wymiarach — bez tego
+  agent widział tylko wspólną listę wymiarów całego zipa i musiał zgadywać.
+
+Pełny opis przypadku: `data/training_examples.md`, pozycja 3.
+
 Nadal otwarte: `parse_zip` tworzy dla folderów HTML **równolegle** jednostki `html5` i
 `image` dla tych samych wymiarów (`HTML FRC`: 15 html5 + 30 image). Dziś nieszkodliwe, bo
 format bierzemy z nazwy folderu i jednostki zwijają się do tego samego ada. Zaboli, gdyby
@@ -429,7 +566,9 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
 6. **Trening na kolejnych parach (zip+wiadomość → docelowa struktura)** — user dostarcza je
    iteracyjnie, log w `data/training_examples.md`.
 7. **Programmatic jako przypadek szczególny** — świadomie odłożone od początku projektu.
-   Różni się tym, że tam realnie wgrywamy assety (nie tylko szablon 1×1).
+   Różni się tym, że tam realnie wgrywamy assety (nie tylko szablon 1×1). Od 06.08.2026
+   programmatic **da się już trafficować obok GDN jako zwykłe źródło trackingowe**
+   (patrz „Kilka źródeł"), ale upload assetów wciąż nie istnieje.
 8. Drobne: obsługa `.7z` bezpośrednio w `parse_zip.py` (dziś tylko `.zip`, choć `py7zr` jest
    zainstalowane i sprawdzone ręcznie), sprzątanie artefaktów testowych w CM360 (nieszkodliwe,
    user powiedział że narazie nie trzeba).
@@ -441,16 +580,18 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    wskaźnik pracy, cofanie, styl Cube Group, ciemny motyw, pobieranie tagów, wyszarzanie).
 11. Oznaczać, **po którym LP nastąpiło automatyczne dopasowanie kampanii** (user zgłosił
    04.08.2026, świadomie odłożone na potem). **NADAL NIEROBIONE.**
-12. **Etykieta z `utm_campaign` bywa za długa.** Przy kolizji z istniejącym LP etykieta jest
-    wyprowadzana z różnicy adresów, więc dla `utm_campaign=refinansowanie2026` wychodzi
-    `linia2-GDN-refinansowanie2026`, a user wolał `refinans`. Do rozważenia: skracanie do
-    pierwszego członu przed cyframi. **User to zgłosił, ja zaproponowałem — nie było
-    decyzji.**
+12. ~~**Etykieta z `utm_campaign` bywa za długa.**~~ — **ZROBIONE 06.08.2026** przez słowo
+    klucza per adres (patrz sekcja o konwencji nazw). Automatyczne skracanie do członu przed
+    cyframi świadomie NIE zostało zrobione: user podaje wprost, czego chce.
 13. **Cofanie nie ma „ponów" (redo)** ani skrótu Ctrl+Z. Świadomie minimalny zakres.
+14. **Nazwy adów w paczkach Meta niosą nazwę folderu** (`statyki_1080x1920_1`), która po
+   06.08.2026 stoi już w nazwie placementu (`Statyki`) — czyli dubluje się. Zostawione
+   bez zmian: user zgłaszał tylko placementy, a `adKey: variant_dim_card` dotyczy też
+   karuzeli, gdzie bez prefiksu zostałoby samo `1`/`2`/`3`. **Do decyzji usera.**
 
 ## HANDOFF — pierwsze kroki w nowej sesji
 
-1. `py tests/test_matcher.py` … i pozostałe pięć plików. **Musi być 277/277.** Jeśli nie —
+1. `py tests/test_matcher.py` … i pozostałe sześć plików. **Musi być 368/368.** Jeśli nie —
    zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`** (stawia serwer i otwiera przeglądarkę).
    **Nie stawiaj `serve.py` jako swojego zadania w tle na stałe** — jego czas życia jest
