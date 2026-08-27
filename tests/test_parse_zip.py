@@ -106,6 +106,72 @@ check("`linia{N}` nie jest wariantem", st["variants"], [])
 check("...także na poziomie jednostek",
       {u.get("variant") for u in st["units"]}, {None})
 
+print("\nNIEZNANY folder obok znanych — realne zgłoszenie (GDN/ + Programmatic/ + WP/):")
+# WP nie jest w słowniku źródeł, więc wpadało do „resztek”, a resztki należą do źródła
+# głównego — czyli materiały WP zostały zakodowane jako programmatic (dwa placementy
+# o tej samej nazwie, z obcymi wymiarami). Paczka rozdzielona po źródłach nie ma resztek.
+wp = _outer({
+    "Linia 3 HH/GDN/300x250/index.html": "<html></html>",
+    "Linia 3 HH/Programmatic/970x250/index.html": "<html></html>",
+    "Linia 3 HH/WP/970x300/index.html": "<html></html>",
+})
+pw = parse_zip.parse(wp)
+check("nieznany folder jest GRUPĄ, nie resztkami",
+      [g["name"] for g in pw["groups"]], ["GDN", "Programmatic", "WP"])
+check("...i żadna jednostka nie zostaje bez grupy",
+      {u.get("group") for u in pw["units"]}, {"GDN", "Programmatic", "WP"})
+check("wymiar WP nie należy do programmatica",
+      sorted(u["dimension"] for u in pw["units"] if u["group"] == "Programmatic"),
+      ["970x250"])
+# paczka BEZ podziału po źródłach nie zaczyna nagle robić grup z folderów wymiarów
+plain = _outer({"out/300x250/index.html": "<html></html>",
+                "out/970x250/index.html": "<html></html>"})
+check("foldery wymiarów nie są grupami", parse_zip.parse(plain)["groups"], [])
+# ani z folderów zestawów
+setsonly = _outer({"p/linia1/300x250/index.html": "<html></html>",
+                   "p/linia2/300x250/index.html": "<html></html>"})
+check("foldery zestawów nie są grupami", parse_zip.parse(setsonly)["groups"], [])
+
+print("\nMAILING — linki z index.html (jednostką jest wysyłka, nie baner):")
+MAIL_HTML = """<html><body>
+  <a href="https://www.mbank.pl/">logo</a>
+  <a href="#">CTA (placeholder agencji)</a>
+  <a href='https://www.mbank.pl/regulamin'>regulamin</a>
+  <a href="https://www.mbank.pl/">to samo co logo</a>
+  <a href="mailto:kontakt@mbank.pl">napisz</a>
+  <img src="img.png">
+</body></html>"""
+mail = _outer({"index.html": MAIL_HTML, "img.png": b"x", "logo.png": b"y"})
+pm = parse_zip.parse(mail)
+check("jedna wysyłka na plik HTML", [m["file"] for m in pm["mailings"]], ["index.html"])
+check("linki http, unikalne, w kolejności z dokumentu",
+      pm["mailings"][0]["links"],
+      ["https://www.mbank.pl/", "https://www.mbank.pl/regulamin"])
+# `#` i `mailto:` nie są adresami do trafficowania, ale w realnej wysyłce CTA bywa
+# placeholderem `#` — dlatego są raportowane, a nie milcząco gubione
+check("linki bez adresu zgłoszone, nie zgubione",
+      pm["mailings"][0]["skippedLinks"], ["#", "mailto:kontakt@mbank.pl"])
+check("...i widać to w ostrzeżeniach",
+      any("bez adresu do trafficowania" in w for w in pm["warnings"]), True)
+
+multi = _outer({"mail1/index.html": MAIL_HTML, "mail2/index.html":
+                '<a href="https://www.mbank.pl/x">x</a>'})
+check("kilka wysyłek w paczce = kilka plików index",
+      [m["file"] for m in parse_zip.parse(multi)["mailings"]],
+      ["mail1/index.html", "mail2/index.html"])
+
+# Paczka banerów HTML5 z `index.html` per wymiar też zostanie wypisana — `mailings` to
+# tylko DANE, używa ich wyłącznie źródło Mailing, więc dla GDN nie zmienia niczego.
+banners = _outer({f"{d}/index.html": '<a href="https://x.pl/">clicktag</a>'
+                  for d in ("300x250", "160x600", "300x600", "728x90")})
+check("indeksy banerów też trafiają do `mailings` (to dane, nie decyzja)",
+      len(parse_zip.parse(banners)["mailings"]), 4)
+# ...a HTML-e nie-indeksowe w liczbie większej niż 3 nie są już nawet czytane
+htmls = _outer({f"banner_{d}.html": '<a href="https://x.pl/">c</a>'
+                for d in ("300x250", "160x600", "300x600", "728x90")})
+check("wiele nie-indeksowych HTML-i = paczka banerów, nie wysyłki",
+      parse_zip.parse(htmls)["mailings"], [])
+
 print("\netykieta zestawu z nazwy folderu:")
 check("`linia2` -> 2", parse_zip._set_label("linia2"), "2")
 check("`KV1_NNW paczki` -> KV1 (po cyfrze stoi `_`, nie granica słowa)",

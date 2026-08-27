@@ -324,30 +324,32 @@ check("...także wtedy, gdy jego nazwa JEST formatem znanym źródłu",
           folder_match={"map": {"statyki": 0}, "consumed": ["statyki"]})["placements"]],
       ["Karuzela"])
 
-print("\nKILKA ŹRÓDEŁ w jednym zleceniu (paczka z folderami GDN/ + Programmatic/):")
+print("\nKILKA ŹRÓDEŁ w jednym zleceniu (paczka z folderami GDN/ + Mailing/):")
+# drugie źródło świadomie NIE-serwujące: programmatic ma dziś własny model obiektów
+# (patrz „tryb serwujący” niżej), a tu sprawdzamy sam kontrakt wielu źródeł
 PARSED_2SRC = {"format_hint": "Display", "warnings": [], "groups": [
     {"name": "GDN", "source_hint": "GDN", "n_entries": 2},
-    {"name": "Programmatic", "source_hint": "Programmatic", "n_entries": 2}], "units": [
+    {"name": "Mailing", "source_hint": "Mailing", "n_entries": 2}], "units": [
         _u("300x250", "GDN", "GDN"), _u("160x600", "GDN", "GDN"),
-        _u("300x250", "Programmatic", "Programmatic"),
-        _u("970x250", "Programmatic", "Programmatic")]}
+        _u("300x250", "Mailing", "Mailing"),
+        _u("970x250", "Mailing", "Mailing")]}
 # jedna strona docelowa, LP na każde źródło — ten sam numer linii, inny sufiks
 LINES_2SRC = [
     {"lineNumber": 1, "lpName": "linia1-GDN", "creativeName": "linia1", "source": "GDN",
      "path": "a", "reused": False, "url": "https://x/a?utm_source=gdn"},
-    {"lineNumber": 1, "lpName": "linia1-Programmatic", "creativeName": "linia1",
-     "source": "Programmatic", "path": "a", "reused": False,
-     "url": "https://x/a?utm_source=programmatic"},
+    {"lineNumber": 1, "lpName": "linia1-Mailing", "creativeName": "linia1",
+     "source": "Mailing", "path": "a", "reused": False,
+     "url": "https://x/a?utm_source=mailing"},
 ]
 p2 = B.build_proposal("GDN", PARSED_2SRC, camp, lines=LINES_2SRC,
-                      sources=["GDN", "Programmatic"])
+                      sources=["GDN", "Mailing"])
 check("każde źródło ma swój placement na SWOIM Site",
       [(pl["name"], pl["site"], pl["source"]) for pl in p2["placements"]],
-      [("Display", "CG_GDN", "GDN"), ("Display", "CG_Programmatic", "Programmatic")])
+      [("Display", "CG_GDN", "GDN"), ("Mailing", "mailsales.pl", "Mailing")])
 check("lista Site zlecenia, główne pierwsze",
-      [s["name"] for s in p2["sites"]], ["CG_GDN", "CG_Programmatic"])
+      [s["name"] for s in p2["sites"]], ["CG_GDN", "mailsales.pl"])
 check("źródło główne zostaje w `source`, wszystkie w `sources`",
-      (p2["source"], p2["sources"]), ("GDN", ["GDN", "Programmatic"]))
+      (p2["source"], p2["sources"]), ("GDN", ["GDN", "Mailing"]))
 check("wybrane źródło nie jest już „obcą grupą” — zero pytań",
       [q["id"] for q in p2["questions"]], [])
 check("ady rozdzielone po źródłach (Programmatic ma swoje wymiary)",
@@ -358,24 +360,27 @@ check("creative bierze LP swojego źródła",
       [[(c["name"], c["lpName"]) for a in pl["ads"] for c in a["creatives"]]
        for pl in p2["placements"]],
       [[("linia1", "linia1-GDN"), ("linia1", "linia1-GDN")],
-       [("linia1", "linia1-Programmatic"), ("linia1", "linia1-Programmatic")]])
+       [("linia1", "linia1-Mailing"), ("linia1", "linia1-Mailing")]])
 check("po jednym creative na ad — LP drugiego źródła się nie doklejają",
       {len(a["creatives"]) for pl in p2["placements"] for a in pl["ads"]}, {1})
 check("4 tagi = 4 ady × 1 creative", len(p2["tags"]), 4)
 check("tag niesie Site swojego źródła",
-      sorted({t["site"] for t in p2["tags"]}), ["CG_GDN", "CG_Programmatic"])
+      sorted({t["site"] for t in p2["tags"]}), ["CG_GDN", "mailsales.pl"])
 # materiały spoza folderów źródeł należą do źródła GŁÓWNEGO
 PARSED_LEFT = dict(PARSED_2SRC, units=PARSED_2SRC["units"] + [_u("750x200", "inne", None)])
-check("resztki poza folderami źródeł idą na Site źródła głównego",
-      [(pl["name"], pl["site"]) for pl in B.build_proposal(
+# ...ale NIE po cichu: materiał z niezidentyfikowanego folderu dostaje własny, filtrowalny
+# węzeł i pytanie (patrz „materiały spoza rozpoznanych folderów")
+check("resztki poza folderami źródeł idą na Site źródła głównego, ale osobnym węzłem",
+      [(pl["name"], pl["site"], pl["group"]) for pl in B.build_proposal(
           "GDN", PARSED_LEFT, camp, lines=LINES_2SRC,
-          sources=["GDN", "Programmatic"])["placements"]],
-      [("Display", "CG_GDN"), ("Display", "CG_Programmatic")])
+          sources=["GDN", "Mailing"])["placements"]],
+      [("Display", "CG_GDN", B.LOOSE_GROUP), ("Display", "CG_GDN", None),
+       ("Mailing", "mailsales.pl", None)])
 # bez zaznaczenia drugiego źródła zachowanie jak dotąd: obcy folder = pytanie
 p1 = B.build_proposal("GDN", PARSED_2SRC, camp, lines=LINES_2SRC[:1])
 check("niewybrane źródło zostaje decyzją użytkownika",
       [(q["id"], [o["value"] for o in q["options"]]) for q in p1["questions"]],
-      [("groups", ["Programmatic"])])
+      [("groups", ["Mailing"])])
 check("...i ląduje na Site źródła głównego, jak przed zmianą",
       sorted({pl["site"] for pl in p1["placements"]}), ["CG_GDN"])
 
@@ -405,6 +410,183 @@ check("bez folderów zestawów nazwy adów zostają bez sufiksu",
       [a["name"] for a in B.build_proposal("GDN", dict(PARSED_SETS, units=[
           _u("300x250", "GDN", "GDN")]), camp,
           lines=LINES_2SRC[:1])["placements"][0]["ads"]], ["300x250"])
+
+print("\nMATERIAŁY SPOZA ROZPOZNANYCH FOLDERÓW — pytanie, nie ciche wpuszczenie:")
+# Życzenie usera po zgłoszeniu z paczki GDN/+Programmatic/+WP/: nic z niezidentyfikowanego
+# folderu nie może wejść do struktury bez jego decyzji. Foldery obok rozpoznanych są
+# grupami (parser), a to, co nie leży w ŻADNYM rozpoznanym folderze, dostaje pseudo-grupę.
+PARSED_LOOSE = {"format_hint": "Display", "warnings": [], "groups": [
+    {"name": "GDN", "source_hint": "GDN", "n_entries": 2}], "units": [
+        _u("300x250", "GDN", "GDN"), _u("160x600", "GDN", "GDN"),
+        _u("970x250", "cośdziwnego", None)]}
+pl_loose = B.build_proposal("GDN", PARSED_LOOSE, camp, lines=LINES_2SRC[:1])
+q_loose = next(q for q in pl_loose["questions"] if q["id"] == "groups")
+check("materiały luzem trafiają do pytania jako osobna pozycja",
+      [o["value"] for o in q_loose["options"]], [B.LOOSE_GROUP])
+check("...i NIC nie jest zaznaczone domyślnie", q_loose["default"], [])
+check("...a ich placement da się odfiltrować (nosi pseudo-grupę)",
+      sorted((pl["name"], str(pl["group"])) for pl in pl_loose["placements"]),
+      [("Display", "None"), ("Display", B.LOOSE_GROUP)])
+gdn_pl = next(pl for pl in pl_loose["placements"] if pl["group"] is None)
+check("wymiar luzem nie wchodzi do placementu rozpoznanego źródła",
+      sorted(a["name"] for a in gdn_pl["ads"]), ["160x600", "300x250"])
+# paczka NIEROZDZIELONA po folderach to normalne materiały zlecenia — bez pytania
+PARSED_FLAT = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    _u("300x250", "banner-1", None), _u("160x600", "banner-2", None)]}
+check("paczka bez podziału na foldery nie pyta o nic",
+      [q["id"] for q in B.build_proposal("GDN", PARSED_FLAT, camp,
+                                         lines=LINES_2SRC[:1])["questions"]], [])
+# folder przypisany do strony docelowej jest już zidentyfikowany — nie pytamy o niego
+check("folder zużyty jako rozróżnienie LP nie jest „materiałem luzem”",
+      B.loose_units(PARSED_LOOSE, consumed=["cośdziwnego"]), [])
+
+print("\nMAILING — ad na wysyłkę, kreacja i LP na każdy link (wzorzec: gotowe tagi klienta):")
+import matcher as MM
+CAMP_MAIL = {"id": "36461008", "name": "Household 08-12.2026", "status": "existing"}
+PARSED_MAIL = {"format_hint": "Mailing", "warnings": [], "groups": [], "units": [],
+               "mailings": [{"file": "index.html", "skippedLinks": ["#"], "links": [
+                   "https://www.mbank.pl/",
+                   "https://www.mbank.pl/indywidualny/ubezpieczenia/nieruchomosci/",
+                   "https://www.mbank.pl/slowniczek"]}]}
+MCONF = B.source_conf("Mailing")
+check("numer wysyłki z kampanii: mail1 istnieje -> mail2",
+      MM.next_mail_number([{"lpName": "mail1-mbank"}, {"lpName": "linia3-GDN"}]), 2)
+check("pusta kampania -> mail1", MM.next_mail_number([]), 1)
+mlines = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1)
+check("etykiety startują jako a, b, c — automat nie zgaduje, co jest CTA",
+      [(l["creativeName"], l["lpName"]) for l in mlines],
+      [("mail-1-a", "mail1-a"), ("mail-1-b", "mail1-b"), ("mail-1-c", "mail1-c")])
+check("UTM-y doklejone automatycznie",
+      mlines[0]["url"],
+      "https://www.mbank.pl/?utm_source=mailing&utm_medium=cpc"
+      "&utm_campaign=household_08_12_2026")
+check("adres z własnym utm_source nie dostaje drugiego",
+      B.mailing_lines(dict(PARSED_MAIL, mailings=[{"file": "i.html", "links":
+          ["https://x.pl/?utm_source=inne"], "skippedLinks": []}]),
+          MCONF, CAMP_MAIL)[0]["url"], "https://x.pl/?utm_source=inne")
+mprop = B.build_proposal("Mailing", PARSED_MAIL, CAMP_MAIL, lines=mlines)
+pl_m = mprop["placements"][0]
+check("Site i placement z konwencji mailingowej",
+      (pl_m["site"], pl_m["name"], pl_m["compatibility"]),
+      ("mailsales.pl", "Mailing", "DISPLAY"))
+check("JEDEN ad na wysyłkę", [a["name"] for a in pl_m["ads"]], ["mail-1"])
+check("kreacje na tym adzie, każda z własnym LP",
+      [(c["name"], c["lpName"]) for c in pl_m["ads"][0]["creatives"]],
+      [("mail-1-a", "mail1-a"), ("mail-1-b", "mail1-b"), ("mail-1-c", "mail1-c")])
+check("tagi = ad × kreacje", len(mprop["tags"]), 3)
+check("mailing nie pyta o grupy/formaty (nie ma wymiarów)", mprop["questions"], [])
+check("linki bez adresu widoczne w propozycji",
+      mprop["mailings"][0]["skippedLinks"], ["#"])
+# poprawki użytkownika: nazwy linków + dopisany CTA, którego w paczce nie było (`#`)
+OVR = {"1": [{"label": "mbank"}, {"label": "regulamin"}, {"label": "slowniczek"},
+             {"label": "CTA", "url": "https://www.mbank.pl/lp2/sierpien-2/"}]}
+mlines2 = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1, override=OVR)
+check("po nazwaniu linków wychodzi struktura z gotowych tagów klienta",
+      sorted(l["creativeName"] for l in mlines2),
+      ["mail-1-CTA", "mail-1-mbank", "mail-1-regulamin", "mail-1-slowniczek"])
+check("dopisany link niesie swój adres bez UTM-ów, gdy user podał go sam",
+      mlines2[3]["url"], "https://www.mbank.pl/lp2/sierpien-2/")
+check("...i ma swoje LP", mlines2[3]["lpName"], "mail1-CTA")
+# wyczyszczenie etykiety wraca do domyślnej litery, a nie do pustej nazwy; LP bez sufiksu
+# (`mail1`, jak dla CTA w gotowych tagach) user ustawia w edytorze linii, gdzie nazwa LP
+# i nazwa kreacji są osobnymi polami
+check("wyczyszczona etykieta wraca do domyślnej litery",
+      B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1,
+                      override={"1": [{"label": " "}]})[0]["lpName"], "mail1-a")
+# dwie wysyłki w paczce -> dwa ady na jednym placemencie
+PARSED_2M = dict(PARSED_MAIL, mailings=PARSED_MAIL["mailings"] + [
+    {"file": "mail2/index.html", "links": ["https://www.mbank.pl/y"], "skippedLinks": []}])
+l2m = B.mailing_lines(PARSED_2M, MCONF, CAMP_MAIL, start_no=1)
+check("druga wysyłka to mail-2 i LP mail2-*",
+      [(l["adName"], l["creativeName"], l["lpName"]) for l in l2m][-1:],
+      [("mail-2", "mail-2-a", "mail2-a")])
+check("...jako drugi ad na TYM SAMYM placemencie",
+      [a["name"] for a in B.build_proposal("Mailing", PARSED_2M, CAMP_MAIL,
+                                           lines=l2m)["placements"][0]["ads"]],
+      ["mail-1", "mail-2"])
+
+print("\nETYKIETY LP przy źródle serwującym (audiencja zamiast słowa klucza):")
+LNK = ["u0", "u1", "u2", "u3"]
+labels, lname = B.serving_line_labels(LNK[:3], {0: "linia3"}, "Programmatic")
+check("trzy adresy programmatica -> audiencje po kolei",
+      labels, {0: "default", 1: "prospecting", 2: "retargeting"})
+check("słowo klucza przestaje być etykietą, zostaje nazwą linii", lname, "linia3")
+check("wskazanie użytkownika ma pierwszeństwo",
+      B.serving_line_labels(LNK[:3], {}, "Programmatic",
+                            row_audiences={1: "retargeting"})[0][1], "retargeting")
+# zgłoszone: przy adresie źródła NIEserwującego nie ma czego wybierać, a licznik
+# audiencji nie może przeskakiwać po cudzych wierszach
+mix, _ = B.serving_line_labels(LNK, {0: "linia3", 3: "lookalike"}, "Programmatic",
+                               row_sources={3: "Meta"})
+check("adres Mety zachowuje swoje słowo klucza, audiencji nie dostaje",
+      mix, {0: "default", 1: "prospecting", 2: "retargeting", 3: "lookalike"})
+mix2, _ = B.serving_line_labels(LNK, {}, "Meta", row_sources={1: "Programmatic",
+                                                             3: "Programmatic"})
+check("audiencje liczone w obrębie SWOJEGO źródła, nie po wszystkich wierszach",
+      mix2, {1: "default", 3: "prospecting"})
+check("zlecenie bez źródła serwującego nic nie zmienia",
+      B.serving_line_labels(LNK, {0: "lookalike"}, "GDN"), (None, None))
+
+print("\nTRYB SERWUJĄCY (programmatic) — inny model obiektów niż tracking:")
+# Odwzorowane z realnego placementu klienta: JEDEN placement z listą wymiarów, kreacja
+# nazwana wymiarem, jeden ad `Display` ze wszystkimi kreacjami, LP per audiencja.
+# Adów `{wymiar} Default Web Ad` tu nie ma — tworzy je CM i bierze default kampanii.
+import datetime
+CAMP_SRV = {"id": "9", "name": "household_08-12.2026", "status": "existing"}
+def _usrv(dim, sset):
+    return {"dimension": dim, "variant": None, "card_index": None, "set_index": sset,
+            "type": "html5", "packaged": True, "group": None,
+            "source_path": f"pack_programmatic.zip/{dim}"}
+
+
+PARSED_SRV = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    _usrv("300x250", "KV1"), _usrv("970x250", "KV1"), _usrv("300x250", "KV3")]}
+LINES_SRV = [{"lineNumber": 1, "lpName": f"linia1-programmatic-{a}", "creativeName": "linia1",
+              "source": "programmatic", "label": a, "keyword": "refinans", "path": "a",
+              "reused": False, "url": f"https://x/a?aud={a}"}
+             for a in ("default", "prospecting", "retargeting")]
+psrv = B.build_proposal("Programmatic", PARSED_SRV, CAMP_SRV, lines=LINES_SRV,
+                        sources=["Programmatic"], line_label="refinans",
+                        today=datetime.date(2026, 8, 17))
+check("placement na (zestaw × audiencja), nazwa wg wzorca z configu",
+      [pl["name"] for pl in psrv["placements"]],
+      ["household_08-12.2026_refinans-KV1_17.08.2026-prospecting",
+       "household_08-12.2026_refinans-KV1_17.08.2026-retargeting",
+       "household_08-12.2026_refinans-KV3_17.08.2026-prospecting",
+       "household_08-12.2026_refinans-KV3_17.08.2026-retargeting"])
+check("wymiary zadeklarowane na placemencie, per zestaw",
+      [pl["sizes"] for pl in psrv["placements"]],
+      [["300x250", "970x250"], ["300x250", "970x250"], ["300x250"], ["300x250"]])
+check("jeden ad `Display` na placement",
+      {a["name"] for pl in psrv["placements"] for a in pl["ads"]}, {"Display"})
+check("kreacja nazwana WYMIAREM, nie linią",
+      [c["name"] for c in psrv["placements"][0]["ads"][0]["creatives"]],
+      ["300x250", "970x250"])
+check("kreacje klikają w LP swojej audiencji",
+      [pl["ads"][0]["creatives"][0]["lpName"] for pl in psrv["placements"]],
+      ["linia1-programmatic-prospecting", "linia1-programmatic-retargeting",
+       "linia1-programmatic-prospecting", "linia1-programmatic-retargeting"])
+check("LP `-default` NIE jest użyte w drzewie (idzie na default kampanii)",
+      any("default" in (c.get("lpName") or "") for pl in psrv["placements"]
+          for a in pl["ads"] for c in a["creatives"]), False)
+check("audiencja i zestaw zapisane na węźle (dla writera)",
+      [(pl["audience"], pl["set"]) for pl in psrv["placements"]],
+      [("prospecting", "KV1"), ("retargeting", "KV1"),
+       ("prospecting", "KV3"), ("retargeting", "KV3")])
+check("wszystko na Site programmatica",
+      {pl["site"] for pl in psrv["placements"]}, {"CG_Programmatic"})
+# bez słowa klucza nazwa linii spada na konwencję, a nie na puste miejsce w nazwie
+psrv2 = B.build_proposal("Programmatic", PARSED_SRV, CAMP_SRV,
+                         lines=[dict(l, keyword=None) for l in LINES_SRV],
+                         sources=["Programmatic"], today=datetime.date(2026, 8, 17))
+check("brak słowa klucza -> nazwa linii z konwencji",
+      psrv2["placements"][0]["name"],
+      "household_08-12.2026_linia1-KV1_17.08.2026-prospecting")
+# GDN w tej samej paczce zostaje trackingiem — tryb serwujący jest per ŹRÓDŁO
+check("tryb serwujący nie rozlewa się na inne źródła",
+      [(pl["name"], pl.get("serving")) for pl in B.build_proposal(
+          "GDN", PARSED_SRV, camp, lines=LINES_2SRC[:1])["placements"]],
+      [("Display", None)])
 
 print("\nskrót źródła w nazwie LP (config, nie zaszyty w kodzie):")
 check("Facebook -> FB", B.lp_source("Facebook"), "FB")

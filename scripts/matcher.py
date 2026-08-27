@@ -143,6 +143,49 @@ def split_lp_name(name):
     return int(m.group(1)), src, label
 
 
+# --- konwencja nazw MAILINGU -------------------------------------------------
+# Mailing nie ma wymiarów ani „linii": jednostką jest wysyłka, a każdy link w niej to
+# osobna strona docelowa i osobna kreacja na JEDNYM adzie. Odwzorowane 1:1 z gotowych
+# tagów klienta (Tags_Household 08-12.2026): ad `mail-1`, kreacje `mail-1-CTA`,
+# `mail-1-mbank`, `mail-1-regulamin`, `mail-1-slowniczek`, LP `mail1`, `mail1-mbank`…
+# Kreska po `mail` jest w nazwie ADA i KREACJI, ale NIE w nazwie LP — tak jest na koncie
+# i użytkownik potwierdził, że zostaje.
+MAIL_NAME_RE = re.compile(r"^\s*mail\s*-?\s*(\d+)", re.I)
+MAIL_LABELS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def mail_ad_name(number):
+    return f"mail-{number}"
+
+
+def mail_creative_name(number, label):
+    return f"mail-{number}-{label}" if label else f"mail-{number}"
+
+
+def mail_lp_name(number, label):
+    return f"mail{number}-{label}" if label else f"mail{number}"
+
+
+def next_mail_number(existing_lps):
+    """Kolejny numer wysyłki w kampanii: `mail1` istnieje -> `mail2`.
+
+    Czytane z nazw stron docelowych kampanii, tak samo jak numer linii — numeracja jest
+    per kampania, nie per paczka.
+    """
+    top = 0
+    for lp in existing_lps or []:
+        m = MAIL_NAME_RE.match(lp.get("lpName") or "")
+        if m:
+            top = max(top, int(m.group(1)))
+    return top + 1
+
+
+def mail_labels(n):
+    """Domyślne etykiety linków: a, b, c… (użytkownik zmienia je na `mbank`, `regulamin`).
+    Po wyczerpaniu alfabetu numerujemy dalej, żeby nigdy nie powtórzyć etykiety."""
+    return [MAIL_LABELS[i] if i < len(MAIL_LABELS) else f"link{i + 1}" for i in range(n)]
+
+
 def detect_line_conflict(url, anchor, source, existing_lps):
     """Ambiguous case (must ASK): an existing line has the SAME path AND same source
     but a DIFFERENT query (e.g. only `sprzedawca` differs) -> reuse vs add new line."""

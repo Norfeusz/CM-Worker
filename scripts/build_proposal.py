@@ -5,6 +5,7 @@ Creative tree. Pure/testable; the UI edits this contract and write-back consumes
 Usage (demo, offline):
   py scripts/build_proposal.py <zip> <source> <lineNumber> [--json]
 """
+import datetime
 import json
 import os
 import re
@@ -30,6 +31,12 @@ def _group_lines(campaign_lps):
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_MAP = os.path.join(BASE, "config", "source_map.json")
+
+
+def source_conf(source, source_map=None):
+    """Konfiguracja jednego źródła z source_map (pusty dict, gdy nieznane)."""
+    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    return source_map.get(source) or {}
 
 
 def lp_source(source, source_map=None):
@@ -105,9 +112,13 @@ def build_questions(parsed, line_conflict=None, chosen_source=None, folder_match
     groups = [g for g in (parsed.get("groups") or [])
               if g["name"] not in consumed and not placement_for(src_conf, g["name"])
               and not group_source(g, selected)]
-    if groups:
+    loose = loose_units(parsed, consumed, src_conf)
+    if groups or loose:
         opts = [{"value": g["name"], "label": f"{g['name']} ({g['source_hint'] or '?'}, "
                  f"{g['n_entries']} plików)"} for g in groups]
+        if loose:
+            opts.append({"value": LOOSE_GROUP,
+                         "label": f"{LOOSE_GROUP} ({len(loose)} jednostek)"})
         # Nic nie jest zaznaczone domyślnie. Zostały tu WYŁĄCZNIE foldery, które nie
         # należą do żadnego wybranego źródła — a paczka z materiałami afiliacji i
         # programmatic obok GDN nie może po cichu dorzucić obcych wymiarów do zlecenia
@@ -118,7 +129,9 @@ def build_questions(parsed, line_conflict=None, chosen_source=None, folder_match
             "prompt": "Zip zawiera foldery/paczki spoza wybranych źródeł. Które jeszcze kodujemy?",
             "options": opts, "default": [],
             "note": "Domyślnie ŻADNEGO — kodujemy tylko wybrane źródła. Zaznacz, jeśli "
-                    "materiały z tego folderu też mają wejść (powstanie osobny placement).",
+                    "materiały z tego folderu też mają wejść (powstanie osobny placement)."
+                    + (f" Pozycja „{LOOSE_GROUP}” to materiały, które nie leżą w żadnym "
+                       "rozpoznanym folderze — sprawdź je, zanim wpuścisz." if loose else ""),
         })
     if line_conflict and line_conflict.get("conflict"):
         ex_name = line_conflict.get("existingLpName") or ""
@@ -166,6 +179,34 @@ def _line_node(L, fallback_url=None):
             # dropped (the address is already a landing page under another name)
             "keyword": L.get("keyword"),
             "keywordIgnored": bool(L.get("keywordIgnored"))}
+
+
+# Pseudo-grupa dla materiałów, które nie leżą w ŻADNYM rozpoznanym folderze, choć paczka
+# jest po folderach rozdzielona. Zachowuje się jak zwykła grupa: trafia do pytania
+# „które jeszcze kodujemy?" i domyślnie NIE jest zaznaczona — decyzja użytkownika:
+# materiał z niezidentyfikowanego folderu nie może wejść do struktury po cichu.
+LOOSE_GROUP = "materiały bez rozpoznanego folderu"
+
+
+def loose_units(parsed, consumed=(), conf=None):
+    """Jednostki spoza rozpoznanych folderów, o które trzeba zapytać.
+
+    Pusta lista, gdy: paczka wcale nie jest rozdzielona po folderach (wtedy to normalne
+    materiały zlecenia), folder został już przypisany do strony docelowej (`consumed`),
+    albo folder jest FORMATEM tego źródła (`statyki/` dla Mety) — format jest
+    zidentyfikowany, dostaje swój placement i nie ma o co pytać.
+    """
+    if not (parsed.get("groups") or []):
+        return []
+    out = []
+    for u in parsed.get("units") or []:
+        if u.get("group") is not None:
+            continue
+        fld = _unit_folder(u)
+        if fld in set(consumed) or (conf and placement_for(conf, fld)):
+            continue
+        out.append(u)
+    return out
 
 
 def _unit_folder(u):
@@ -255,9 +296,177 @@ def group_source(group, selected):
     return next((s for s in selected if s.lower() in (hint, name)), None)
 
 
+def mailing_lines(parsed, conf, campaign, start_no=1, override=None):
+    """Strony docelowe i kreacje wysyłek z paczki — wejście dla `build_proposal(lines=…)`.
+
+    Jedna wysyłka = jeden plik HTML = jeden ad; każdy unikalny link http w tym HTML-u =
+    jedna kreacja z WŁASNĄ stroną docelową. Etykiety startują jako a, b, c… — automat
+    świadomie nie zgaduje, który link jest CTA, bo tylko człowiek to rozpozna.
+
+    `override` to poprawki użytkownika z UI: `{"1": [{"label": "mbank", "url": "…"}, …]}`
+    keyowane numerem wysyłki. Podany label/url wygrywa; brak = wersja z paczki + UTM-y.
+    """
+    mconf = conf.get("mailing") or {}
+    utm_tpl = mconf.get("utm") or ""
+    camp_slug = matcher.normalize(campaign.get("name") or "") or "kampania"
+    utm = utm_tpl.format(campaign=camp_slug) if utm_tpl else ""
+    out = []
+    for m_i, mail in enumerate(parsed.get("mailings") or []):
+        no = start_no + m_i
+        rows = list((override or {}).get(str(no)) or (override or {}).get(no) or [])
+        links = mail.get("links") or []
+        labels = matcher.mail_labels(max(len(links), len(rows)))
+        for i, label in enumerate(labels):
+            row = rows[i] if i < len(rows) else {}
+            lab = (row.get("label") or label).strip() or label
+            url = (row.get("url") if row.get("url") is not None
+                   else _with_utm(links[i] if i < len(links) else "", utm))
+            out.append({
+                "lineNumber": no, "mail": no, "label": lab,
+                "lpName": matcher.mail_lp_name(no, lab),
+                "creativeName": matcher.mail_creative_name(no, lab),
+                "adName": matcher.mail_ad_name(no),
+                "source": None, "path": None, "reused": False, "url": url,
+                "sourceLink": links[i] if i < len(links) else None,
+            })
+    return out
+
+
+def _with_utm(url, utm):
+    """Adres z doklejonymi UTM-ami; nie dokłada drugi raz, gdy już tam są."""
+    if not url or not utm:
+        return url
+    if "utm_source=" in url:
+        return url
+    return url + ("&" if "?" in url else "?") + utm
+
+
+def mailing_placements(lines, conf, existing):
+    """Placement `Mailing` z jednym adem na wysyłkę; kreacje wiszą na swoim adzie."""
+    site = conf.get("site")
+    plc_name = (conf.get("placementByFormat") or {}).get("Mailing") or "Mailing"
+    ex_plc = ((existing or {}).get(site, {})).get(plc_name)
+    ads = {}
+    for ln in lines:
+        ad_name = ln.get("adName") or matcher.mail_ad_name(ln["lineNumber"])
+        ex_cre = set((ex_plc or {}).get(ad_name) or [])
+        ads.setdefault(ad_name, []).append({
+            "name": ln["creativeName"], "type": "html", "packaged": False,
+            "source_path": None, "status": _status(ln["creativeName"], ex_cre),
+            "lpName": ln["lpName"], "lpUrl": ln.get("url") or "",
+        })
+    return [{
+        "name": plc_name, "group": None, "source": conf.get("_key") or site,
+        "site": site, "compatibility": "DISPLAY", "size": "1x1", "mailing": True,
+        "status": _status(plc_name, (existing or {}).get(site)),
+        "ads": [{"name": a, "dimension": None, "status": _status(a, ex_plc),
+                 "creatives": cres} for a, cres in sorted(ads.items())],
+    }] if ads else []
+
+
+def serving_line_labels(links, keywords, source, row_audiences=None, row_sources=None,
+                        source_map=None):
+    """Etykiety stron docelowych dla zlecenia, w którym jest źródło SERWUJĄCE.
+
+    W programmatiku etykietą LP jest AUDIENCJA, nie słowo klucza: jedna strona na
+    `default` / `prospecting` / `retargeting`, a użytkownik podaje trzy adresy różniące
+    się parametrem. Słowo klucza wraca w innej roli — to NAZWA LINII w nazwie placementu.
+
+    Rozstrzygane PER ADRES, bo programmatic może w jednym zleceniu stać obok źródła
+    trackingowego: adres Mety zachowuje swoje słowo klucza, a audiencję dostają tylko
+    adresy źródła serwującego — licząc po kolei w obrębie TEGO źródła, nie po wszystkich
+    wierszach formularza.
+
+    Zwraca (etykiety_per_adres, nazwa_linii) albo (None, None), gdy w zleceniu nie ma
+    ani jednego adresu źródła serwującego.
+    """
+    labels, seen, any_srv = dict(keywords or {}), {}, False
+    for i in range(len(links or [])):
+        src_i = (row_sources or {}).get(i) or source
+        srv = (source_conf(src_i, source_map) or {}).get("serving")
+        if not srv:
+            continue
+        any_srv = True
+        auds = list(srv.get("audiences") or [])
+        want = (row_audiences or {}).get(i) or (row_audiences or {}).get(str(i))
+        if want not in auds:
+            ord_ = seen.get(src_i, 0)
+            want = auds[ord_] if ord_ < len(auds) else (auds[-1] if auds else None)
+        seen[src_i] = seen.get(src_i, 0) + 1
+        if want:
+            labels[i] = want
+    if not any_srv:
+        return None, None
+    return labels, next((k for k in (keywords or {}).values() if k), None)
+
+
+def serving_placements(units, conf, campaign, line_nodes, line_label, existing,
+                       today=None):
+    """Drzewo dla źródła, w którym CM360 SERWUJE kreacje (programmatic).
+
+    Inny model obiektów niż tracking — potwierdzony na realnym placemencie klienta:
+      * JEDEN placement na (zestaw materiałów × audiencja), z listą wymiarów w
+        konfiguracji, nazwany `{kampania}_{linia}_{dzień}-{audiencja}`;
+      * kreacja = jeden baner nazwany WYMIAREM (`300x250`), nie „linia";
+      * jeden ad `Display` niosący wszystkie kreacje placementu, z LP swojej audiencji;
+      * ady `{wymiar} Default Web Ad` tworzy sam CM po zadeklarowaniu wymiarów i bierze
+        dla nich domyślną stronę docelową KAMPANII — dlatego ich tu nie ma, a LP
+        `…-default` musi zostać defaultem kampanii (robi to orkiestrator).
+
+    `line_label` to nazwa linii z nazwy placementu = słowo klucza od użytkownika;
+    zestaw (`KV1`) dokłada się do niej, żeby placementy dwóch zestawów się nie zlały.
+    """
+    srv = conf.get("serving") or {}
+    audiences = srv.get("placementAudiences") or ["prospecting", "retargeting"]
+    pattern = srv.get("placementName") or "{campaign}_{line}_{date}-{audience}"
+    date_s = (today or datetime.date.today()).strftime(srv.get("dateFormat") or "%d.%m.%Y")
+    site = conf.get("site")
+    # LP per audiencja: etykieta strony docelowej JEST audiencją (linia1-programmatic-…)
+    lp_by_aud = {(ln.get("label") or "").lower(): ln for ln in line_nodes}
+
+    by_set = {}
+    for u in units:
+        if not u.get("dimension"):
+            continue
+        by_set.setdefault(u.get("set_index"), {}).setdefault(u["dimension"], u)
+
+    out = []
+    for sset in sorted(by_set, key=lambda s: (s is not None, str(s))):
+        dims = sorted(by_set[sset])
+        # zestaw dokładamy do nazwy TYLKO gdy jest ich kilka — sufiks istnieje po to,
+        # żeby dwa komplety się nie zlały, a przy jednym dublowałby nazwę linii
+        label = f"{line_label}-{sset}" if (sset and len(by_set) > 1) else line_label
+        for aud in audiences:
+            ln = lp_by_aud.get(aud.lower()) or (line_nodes[0] if line_nodes else None)
+            name = pattern.format(campaign=campaign.get("name") or "", line=label,
+                                  date=date_s, audience=aud)
+            ex_plc = ((existing or {}).get(site, {})).get(name)
+            creatives = [{"name": d, "type": by_set[sset][d].get("type"),
+                          "packaged": by_set[sset][d].get("packaged", False),
+                          "source_path": by_set[sset][d].get("source_path"),
+                          "status": _status(d, set((ex_plc or {}).get(srv.get("adName")
+                                                                     or "Display") or [])),
+                          **({"lpName": ln["lpName"], "lpUrl": ln.get("url") or ""}
+                             if ln else {})}
+                         for d in dims]
+            ad_name = srv.get("adName") or "Display"
+            out.append({
+                "name": name, "group": None, "source": conf.get("_key") or site,
+                "site": site, "compatibility": "DISPLAY",
+                # rozmiary DEKLAROWANE na placemencie (size + additionalSizes przy zapisie)
+                "size": dims[0] if dims else "1x1", "sizes": dims,
+                "audience": aud, "set": sset, "serving": True,
+                "status": _status(name, (existing or {}).get(site)),
+                "ads": [{"name": ad_name, "dimension": None,
+                         "status": _status(ad_name, ex_plc), "creatives": creatives}],
+            })
+    return out
+
+
 def build_proposal(source, parsed, campaign, line=None, existing=None, source_map=None,
                    campaign_lps=None, target_url=None, line_conflict=None,
-                   lines=None, folder_match=None, sources=None, line_addresses=None):
+                   lines=None, folder_match=None, sources=None, line_addresses=None,
+                   line_label=None, today=None):
     """
     source       : "GDN"/"Facebook"/... — the PRIMARY source of the order
     sources      : every source of this order (primary first). A package that separates
@@ -336,6 +545,33 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     grouped = {g["name"] for g in groups}
     if not groups or any(u.get("group") not in grouped for u in units_all):
         groups = [None] + groups
+    # materiały spoza rozpoznanych folderów: pytamy, zamiast wpuszczać je do zlecenia
+    ask_loose = bool(loose_units(parsed, consumed, main_conf))
+    # nazwa linii w nazwie placementu źródła serwującego: słowo klucza użytkownika,
+    # a gdy go nie podał — nazwa linii z konwencji (linia1)
+    srv_line_label = (line_label or (line_nodes[0]["keyword"] if line_nodes else None)
+                      or (f"linia{line_nodes[0]['number']}" if line_nodes else "linia"))
+    # MAILING: jednostką jest wysyłka, nie baner — paczka nie ma wymiarów, więc cała
+    # ścieżka „units -> placementy per format" jest tu bez sensu. Osobne drzewo.
+    if main_conf.get("mailing") and parsed.get("mailings"):
+        placements = mailing_placements(lines, dict(main_conf, _key=source), existing)
+        proposal = {
+            "campaign": campaign, "source": source, "sources": selected,
+            "site": {"name": main_site, "status": _status(main_site, existing)},
+            "sites": [{"name": main_site, "status": _status(main_site, existing),
+                       "source": source}],
+            "line": line_nodes[0] if line_nodes else None,
+            "lines": line_nodes, "lpFolders": None,
+            "existingLines": _group_lines(campaign_lps),
+            "questions": [], "placements": placements,
+            "mailings": [{"file": m["file"], "links": m.get("links") or [],
+                          "skippedLinks": m.get("skippedLinks") or []}
+                         for m in parsed["mailings"]],
+            "warnings": warnings,
+        }
+        proposal["tags"] = compute_tags(proposal)
+        return proposal
+
     placements, plc_by_key = [], {}
     for g in groups:
         units = ([u for u in units_all if u.get("group") not in grouped] if g is None
@@ -348,6 +584,8 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
         # source nor a folder of a source the user SELECTED is one — there is nothing to
         # ask about and nothing for the UI to filter by (see build_questions)
         pl_group = None if (g is None or fmt_folder or sel_source) else g["name"]
+        if g is None and ask_loose:
+            pl_group = LOOSE_GROUP        # materiał z niezidentyfikowanego folderu
         if g is None or sel_source:
             # own source (incl. the primary one): own Site, own placement naming, own adKey
             g_source = sel_source or source
@@ -361,6 +599,25 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
         else:                              # obcy folder (np. Screening) na Site źródła
             g_source = g["source_hint"] or g["name"]
             g_site, conf, placement_name = main_site, main_conf, g["name"]
+        # źródło serwujące (programmatic): inny model obiektów, osobna ścieżka
+        if conf.get("serving") and (g is None or sel_source):
+            out = serving_placements(units, dict(conf, _key=g_source), campaign,
+                                     line_nodes, srv_line_label, existing, today)
+            for pl in out:
+                key = (pl["site"], pl["name"], None)
+                prev = plc_by_key.get(key)
+                if prev is None:
+                    plc_by_key[key] = pl
+                    placements.append(pl)
+                    continue
+                # ten sam Site i ta sama nazwa = JEDEN placement w CM360; dokładamy
+                # wymiary i kreacje, zamiast tworzyć drugi węzeł o tej samej nazwie
+                have = {c["name"] for c in prev["ads"][0]["creatives"]}
+                prev["ads"][0]["creatives"] += [c for c in pl["ads"][0]["creatives"]
+                                                if c["name"] not in have]
+                prev["sizes"] = sorted({*prev["sizes"], *pl["sizes"]})
+                prev["size"] = prev["sizes"][0] if prev["sizes"] else prev["size"]
+            continue
         ad_key = source_map.get(g_source, conf).get("adKey", "dimension")
         # file-format handling is per source too (mode + aliases + placement names)
         mode = format_mode(conf)
@@ -399,11 +656,13 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
             # remarketing/300x250 are one 300x250 ad with two creatives), so collect
             # the lines it serves and remember which unit fed each of them
             ads = {}
+            # zestaw dokładamy do nazwy ada TYLKO gdy w tym placemencie jest ich kilka:
+            # sufiks istnieje po to, żeby dwa komplety tych samych wymiarów się nie zlały
+            # (`300x250_1` + `300x250_2`), a przy jednym powtarzałby to, co mówi już LP
+            many_sets = len({u.get("set_index") for u in bucket}) > 1
             for u in bucket:
                 base = _ad_name(u, ad_key)
-                # numerowany zestaw materiałów (`linia1/` + `linia2/` w paczce) to dwa
-                # komplety tych samych wymiarów pod JEDNYM LP — rozróżniane na adzie
-                if u.get("set_index"):
+                if u.get("set_index") and many_sets:
                     base = f"{base}_{u['set_index']}"
                 # `adSuffix` mode: one placement, the format separates ads (160x600_gif)
                 name = (f"{base}_{u['_format']}"

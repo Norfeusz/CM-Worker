@@ -162,7 +162,7 @@ def _line_entries(links, keywords, labels, selected, row_sources, source_map=Non
 
 def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None,
                    links=None, folder_map=None, keywords=None, sources=None,
-                   row_sources=None):
+                   row_sources=None, row_audiences=None, mail_links=None):
     """Build the editable proposal for one order.
 
     `links` carries SEVERAL landing pages that all belong to the same campaign; `link`
@@ -203,6 +203,11 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                                             selected)
     # źródło przypisane do adresu ma sens tylko jeśli jest wśród wybranych
     row_src = {int(i): s for i, s in (row_sources or {}).items() if s in selected}
+    # programmatic: etykietą LP jest AUDIENCJA, a słowo klucza staje się nazwą linii
+    aud_labels, line_label = B.serving_line_labels(links, keywords, source,
+                                                  row_audiences, row_src)
+    if aud_labels is not None:
+        keywords = aud_labels
     ent_urls, ent_labels, ent_kw, ent_src, addr_of = _line_entries(
         links, keywords, labels, selected, row_src)
 
@@ -218,7 +223,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                                 existing={s: {} for s in state["sites_by_name"]},
                                 campaign_lps=[], target_url=link,
                                 folder_match=folder_match, sources=selected,
-                                line_addresses=addr_of)
+                                line_addresses=addr_of, line_label=line_label)
         return _attach_ai(prop, parsed, message, rules)
 
     camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
@@ -242,6 +247,19 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                     "candidates": ranked_first[:5]}
 
     this = [l for l in camp_lps if l["campaignId"] == cid]
+    # MAILING: strony docelowe nie pochodzą z formularza, tylko z linków w `index.html`.
+    # Adres wpisany w formularzu służy tu wyłącznie do dopasowania advertisera i kampanii.
+    if (B.source_conf(source) or {}).get("mailing") and parsed.get("mailings"):
+        campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
+        camp_node = {"id": cid, "name": campaign["name"], "status": "existing"}
+        prop = B.build_proposal(
+            source, parsed, camp_node,
+            lines=B.mailing_lines(parsed, B.source_conf(source), camp_node,
+                                  start_no=M.next_mail_number(this),
+                                  override=mail_links),
+            existing=existing_tree(fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)),
+            campaign_lps=this, target_url=link, sources=selected)
+        return _attach_ai(prop, parsed, message, rules)
     lines = M.resolve_lines(ent_urls, anchor, lp_src, this, ent_labels, ent_kw, ent_src)
     # the reuse-vs-new-line question is per landing page AND per source (the source is
     # part of the LP name, so `linia2-GDN` and `linia2-Programmatic` collide separately)
@@ -255,7 +273,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                             lines=lines, existing=existing_tree(state), campaign_lps=this,
                             target_url=link, line_conflict=conflict,
                             folder_match=folder_match, sources=selected,
-                            line_addresses=addr_of)
+                            line_addresses=addr_of, line_label=line_label)
     return _attach_ai(prop, parsed, message, rules)
 
 
@@ -400,7 +418,9 @@ class Handler(BaseHTTPRequestHandler):
                               new_campaign=req.get("newCampaign"),
                               links=links, folder_map=req.get("folderMap"),
                               keywords=req.get("keywords"), sources=req.get("sources"),
-                              row_sources=req.get("linkSources"))
+                              row_sources=req.get("linkSources"),
+                              row_audiences=req.get("linkAudiences"),
+                              mail_links=req.get("mailLinks"))
 
     def _create_site(self, req):
         """Add a Site to the account. dryRun=True -> plan only (still resolves the

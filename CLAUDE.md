@@ -64,9 +64,9 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 `start.bat`; własny proces stawiaj tylko na czas konkretnej weryfikacji.
 Testy offline: `py tests/test_matcher.py`, `test_proposal.py`, `test_orchestrate.py`,
 `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`, `test_parse_zip.py`
-(**368/368 zielone na 10.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 71, proposal 91, orchestrate 44, create_site 15,
-ai_agents 104, export_tags 23, parse_zip 20.
+(**419/419 zielone na 27.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 71, proposal 130, orchestrate 44, create_site 15,
+ai_agents 104, export_tags 23, parse_zip 32.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo.
 `test_ai_agents.py` stawia udawany webhook n8n na localhoście, więc testuje też transport
@@ -334,6 +334,63 @@ Mechanika (rzeczy, które się na tym wywracały):
 Programmatic jest tu obsłużony jak zwykłe źródło trackingowe (1×1). **Realny upload
 assetów dla programmatic nadal NIE jest zrobiony** — patrz punkt 7 kolejki.
 
+## TRZY TRYBY ŹRÓDEŁ (27.08.2026) — tracking / serwujący / mailing
+
+Do 26.08.2026 każde źródło szło jedną ścieżką: placement 1×1, ad per wymiar, kreacja =
+linia. Programmatic i mailing mają **inny model obiektów**, więc `build_proposal` ma dziś
+trzy ścieżki, wybierane blokiem w `source_map.json` (`serving` / `mailing` / brak):
+
+| | tracking (GDN, FB, DemGen, WP) | serwujący (Programmatic) | mailing (Mailing) |
+|---|---|---|---|
+| placement | `Display` 1×1 | `{kampania}_{linia}_{dzień}-{audiencja}`, **lista wymiarów** | `Mailing` |
+| ad | wymiar (`300x250`) | jeden `Display` na placement | jeden `mail-{N}` na wysyłkę |
+| kreacja | linia (`linia3`) | **wymiar** (`300x250`) | link (`mail-1-mbank`) |
+| LP | `linia{N}-{ŹRÓDŁO}[-słowo]` | `linia{N}-programmatic-{audiencja}` | `mail{N}-{etykieta}` |
+
+**Programmatic (`serving`)** — decyzje usera, potwierdzone zrzutami z realnego placementu:
+* trzy LP na audiencje (`default`/`prospecting`/`retargeting`), user podaje trzy adresy
+  różniące się parametrem; **audiencja jest etykietą LP**, a słowo klucza staje się nazwą
+  linii w nazwie placementu (`serving_line_labels`);
+* `LP -default` musi zostać **domyślną stroną kampanii** — stamtąd CM bierze je dla adów
+  `{wymiar} Default Web Ad`, które **tworzy sam** (nie ma ich w naszym drzewie);
+* placement per (zestaw KV × audiencja): 3 kreacje = 6 placementów. Sufiks zestawu tylko
+  gdy zestawów jest kilka — inaczej dublował nazwę linii (`linia3-3`);
+* rozmiary jadą jako `size` + `additionalSizes` (schemat v5 sprawdzony), wycena CPM +
+  `PLACEMENT_AGENCY_PAID`, start = dzień trafficowania, koniec = +3 lata (`endYears`).
+* **Writer NIE jest napisany** — upload assetów (`creativeAssets.insert`, kanał media do
+  1 GB), kreacja `DISPLAY` z assetem PRIMARY, ad `AD_SERVING_STANDARD_AD`. Otwarte:
+  czy CM wymusza `BACKUP_IMAGE` przy zipie HTML5 i czy `DISPLAY` vs `HTML5_BANNER` —
+  rozstrzygnie pierwszy realny insert (konto testowe nie ma ani jednej kreacji HTML5).
+
+**Mailing (`mailing`)** — odwzorowane 1:1 z gotowych tagów klienta:
+* paczka to `index.html` + grafiki, **zero wymiarów** — cała ścieżka „units → placementy
+  per format" jest tu bez sensu, dlatego osobne drzewo (`mailing_placements`);
+* każdy **unikalny link `http(s)`** z HTML-a to kreacja + własne LP; etykiety startują
+  jako `a`, `b`, `c` i user je nazywa (`mbank`, `regulamin`, `CTA`) — automat świadomie
+  nie zgaduje, który link jest CTA;
+* kreska jest w nazwie ADA i KREACJI, ale nie w LP (`mail-1-mbank` ↔ `mail1-mbank`) —
+  tak jest na koncie, user potwierdził, że zostaje;
+* numer wysyłki z LP kampanii (`mail1` istnieje → `mail2`); kilka `index.html` w paczce =
+  kilka adów na jednym placemencie;
+* UTM-y doklejane z szablonu (`utm` w configu), adres z własnym `utm_source` nie dostaje
+  drugiego. **Uwaga**: `utm_campaign` w realnym arkuszu (`household_sierpien`) nie wynika
+  z nazwy kampanii — user poprawia w panelu;
+* linki bez adresu (`#`, `mailto:`) **nie są kodowane, ale są raportowane** — w realnej
+  wysyłce CTA bywa placeholderem `#` i musi dostać LP dopisane ręcznie.
+
+**Materiały spoza rozpoznanych folderów nie wchodzą do struktury bez pytania** (życzenie
+usera po zgłoszeniu z paczki `GDN/` + `Programmatic/` + `WP/`, gdzie materiały WP zostały
+zakodowane jako programmatic). Dwie siatki: nieznany folder **obok rozpoznanego** jest
+grupą (`_detect_groups`), a to, co nie leży w żadnym rozpoznanym folderze, dostaje
+pseudo-grupę `LOOSE_GROUP` — osobny, filtrowalny placement i pozycję w pytaniu, domyślnie
+niezaznaczoną. Wyjątki: folder przypisany do LP i folder będący FORMATEM źródła
+(`statyki/` dla Mety) są zidentyfikowane. Warunek „obok stoi rozpoznany folder" jest
+konieczny — bez niego grupami stawały się foldery kart karuzeli (`1`, `2`) i wariantów.
+
+**`WP` jako źródło** — Site `CG_WP` (id 6781651, **już istniał** na koncie; obok są `WP`,
+`Wp.pl`, `Wp.pl_mailing`, `CG_Dom.wp.pl`, `CG_Wawalove.wp.pl`). W parserze `wp` jest
+rozpoznawane **tylko jako osobne słowo** — jako podciąg trafiało w `warszawawpigulce.pl`.
+
 ## Model domenowy (zwalidowany na żywych danych CM360)
 
 | Pojęcie kliencie | Obiekt CM360 | Uwagi |
@@ -565,10 +622,13 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    przewidywał `Front → n8n → Python`, a realnie jest odwrotnie (patrz niżej).
 6. **Trening na kolejnych parach (zip+wiadomość → docelowa struktura)** — user dostarcza je
    iteracyjnie, log w `data/training_examples.md`.
-7. **Programmatic jako przypadek szczególny** — świadomie odłożone od początku projektu.
-   Różni się tym, że tam realnie wgrywamy assety (nie tylko szablon 1×1). Od 06.08.2026
-   programmatic **da się już trafficować obok GDN jako zwykłe źródło trackingowe**
-   (patrz „Kilka źródeł"), ale upload assetów wciąż nie istnieje.
+7. **Programmatic** — Etap 1 (propozycja + drzewo + dry-run) **ZROBIONY 27.08.2026**, patrz
+   „Trzy tryby źródeł". Zostaje **Etap 2: writer** — repakowanie na zipy per wymiar (paczki
+   klienta często już je mają w środku, np. `300x250.zip`), `creativeAssets.insert`,
+   kreacja `DISPLAY`, placement z `additionalSizes`, ad `AD_SERVING_STANDARD_AD`,
+   ustawienie `LP -default` jako default kampanii, eksport tagów dla placementu
+   serwującego (dziś licznik liczy po staremu ad × creative). Potem **Etap 3**: jeden
+   realny zapis jednego wymiaru na koncie testowym, po wyraźnej zgodzie usera.
 8. Drobne: obsługa `.7z` bezpośrednio w `parse_zip.py` (dziś tylko `.zip`, choć `py7zr` jest
    zainstalowane i sprawdzone ręcznie), sprzątanie artefaktów testowych w CM360 (nieszkodliwe,
    user powiedział że narazie nie trzeba).
@@ -591,7 +651,7 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
 
 ## HANDOFF — pierwsze kroki w nowej sesji
 
-1. `py tests/test_matcher.py` … i pozostałe sześć plików. **Musi być 368/368.** Jeśli nie —
+1. `py tests/test_matcher.py` … i pozostałe sześć plików. **Musi być 419/419.** Jeśli nie —
    zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`** (stawia serwer i otwiera przeglądarkę).
    **Nie stawiaj `serve.py` jako swojego zadania w tle na stałe** — jego czas życia jest

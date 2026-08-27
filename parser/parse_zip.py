@@ -19,7 +19,7 @@ DIM_RE = re.compile(r"(\d{2,4})\s*[xX×]\s*(\d{2,4})")
 # top-level folder names that denote a SOURCE/FORMAT group (ask user), not a variant
 GROUP_KEYWORDS = {"gdn", "screening", "facebook", "meta", "fb", "demgen", "demandgen",
                   "programmatic", "mailing", "video", "display", "karuzela", "animacje",
-                  "posty", "link", "remarketing", "rmg"}
+                  "posty", "link", "remarketing", "rmg", "wp"}
 JUNK_RE = re.compile(r"(^|/)(__MACOSX|\.DS_Store|Thumbs\.db|\.git)(/|$)|(^|/)\._")
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v"}
@@ -65,6 +65,9 @@ def _source_hint(all_names):
         return "Mailing"
     if "programmatic" in blob:
         return "Programmatic"
+    # `wp` tylko jako osobne słowo — jako podciąg trafia w „warszawawpigulce", „WPP" itp.
+    if re.search(r"(?<![a-z0-9])wp(?![a-z0-9])", blob):
+        return "WP"
     return None
 
 
@@ -81,14 +84,29 @@ def _format_hint(all_names, atype):
 
 def _detect_groups(names):
     """Detect top-level SOURCE/FORMAT folders (e.g. GDN, Screening) after root-strip.
-    Returns [{name, source_hint, n_entries}] when >=1 such folder is present."""
+    Returns [{name, source_hint, n_entries}] when >=1 such folder is present.
+
+    Folder ze słownika jest grupą zawsze. Gdy obok niego stoją INNE foldery, są nimi też
+    — nawet jeśli ich nazwy nic nam nie mówią: taka paczka jest evidently rozdzielona po
+    źródłach, a nieznany folder to nieznane źródło, nie „resztki". Bez tego paczka
+    `GDN/` + `Programmatic/` + `WP/` wpuszczała materiały WP do zlecenia programmatic
+    jako resztki (realne zgłoszenie) — czyli dokładnie to, czego nie wolno.
+    Foldery zestawów (`linia{N}`, `KV{N}_…`) i foldery wymiarów grupami nie są.
+    """
     pairs = _strip_root(names)
     tops = {}
     for _orig, rel in pairs:
         if "/" in rel:
             tops.setdefault(rel.split("/")[0], 0)
             tops[rel.split("/")[0]] += 1
-    groups = [t for t in tops if t.lower() in GROUP_KEYWORDS]
+    candidates = [t for t in tops if not _dim(t) and not _set_label(t)]
+    known = [t for t in candidates if t.lower() in GROUP_KEYWORDS]
+    # Nieznany folder jest grupą tylko wtedy, gdy obok stoi ROZPOZNANY folder źródła —
+    # to on jest dowodem, że paczka jest rozdzielona po źródłach (`GDN/` + `WP/`).
+    # Bez tego warunku grupami stawały się foldery kart karuzeli (`1`, `2`) i wariantów
+    # (`banner-1`), czyli zwykły materiał zlecenia; materiał spoza rozpoznanych folderów
+    # łapie osobna siatka bezpieczeństwa (build_proposal.loose_units -> pytanie).
+    groups = candidates if (known and len(candidates) > 1) else known
     return [{"name": g, "source_hint": _source_hint([g]), "n_entries": tops[g]}
             for g in sorted(groups)]
 
@@ -181,6 +199,54 @@ def _strip_root_names(names):
     return [rel for _o, rel in _strip_root(names)]
 
 
+HREF_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.I)
+
+
+def _mailing_htmls(names):
+    """Pliki HTML, które mogą BYĆ mailingiem (a nie podglądem banera).
+
+    `index.html` traktujemy jako mailing zawsze — tak przychodzą wysyłki, także po
+    kilka w jednej paczce (`mail1/index.html`, `mail2/index.html`). Gdy indeksu nie ma,
+    bierzemy pojedyncze pliki HTML, ale tylko jeśli jest ich mało: paczka banerów HTML5
+    ma po jednym HTML na wymiar i skanowanie ich wszystkich to szukanie mailingu tam,
+    gdzie go nie ma.
+    """
+    htmls = [n for n in names if n.lower().endswith((".html", ".htm"))]
+    idx = [n for n in htmls if os.path.basename(n).lower().startswith("index.")]
+    return sorted(idx) if idx else (sorted(htmls) if len(htmls) <= 3 else [])
+
+
+def _mailings(zf, names):
+    """Mailingi w paczce: po jednym na plik HTML, z UNIKALNYMI linkami w kolejności
+    występowania w dokumencie.
+
+    Kodujemy tylko `http(s)` — domena może być dowolna. Linki bez adresu (`#`, `mailto:`,
+    `tel:`) są LICZONE i raportowane, nie milcząco gubione: w realnej wysyłce główny CTA
+    bywa placeholderem `#`, a i tak musi dostać swoją stronę docelową — użytkownik dopisze
+    ją w edytorze.
+    """
+    out = []
+    for n in _mailing_htmls(names):
+        try:
+            html = zf.read(n).decode("utf-8", "replace")
+        except Exception:
+            continue
+        seen, links, skipped = set(), [], []
+        for h in HREF_RE.findall(html):
+            h = h.strip()
+            if not h.lower().startswith(("http://", "https://")):
+                if h not in skipped:
+                    skipped.append(h)
+                continue
+            if h in seen:
+                continue
+            seen.add(h)
+            links.append(h)
+        if links or skipped:
+            out.append({"file": n, "links": links, "skippedLinks": skipped})
+    return out
+
+
 def _parse_units(zf):
     """Return list of ad-unit proposals. Handles nested per-size zips too."""
     pairs = _strip_root(_list_names(zf))
@@ -261,6 +327,7 @@ def parse(path):
     with zipfile.ZipFile(path) as zf:
         names = _list_names(zf)
         units, dropped = _parse_units(zf)
+        mailings = _mailings(zf, names)
     hint_blob = names + [fname]
     atype = _asset_type(names)
     if atype == "other" and units:  # outer had only nested zips
@@ -302,6 +369,10 @@ def parse(path):
     if len(groups) > 1:
         warnings.append("multiple source/format folders detected "
                         f"({[g['name'] for g in groups]}) — ASK which to code")
+    if mailings and any(m["skippedLinks"] for m in mailings):
+        skipped = sorted({h for m in mailings for h in m["skippedLinks"]})
+        warnings.append(f"mailing: {len(skipped)} link(i) bez adresu do trafficowania "
+                        f"({skipped[:3]}) — jeśli któryś to CTA, dopisz jego adres")
     return {
         "file": os.path.basename(path),
         "source_hint": _source_hint(hint_blob),
@@ -312,6 +383,8 @@ def parse(path):
         "variants": variants,
         "n_units": len(units),
         "units": units,
+        # mailingi: po jednym na plik HTML, z linkami do zakodowania jako strony docelowe
+        "mailings": mailings,
         "warnings": warnings,
     }
 

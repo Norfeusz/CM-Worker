@@ -255,7 +255,11 @@
     const Badge = ({ s }) => <span className={"badge " + s}>{s === 'new' ? 'nowe' : 'istnieje'}</span>;
 
     // Źródła obsługiwane przez narzędzie — klucze z config/source_map.json
-    const SOURCES = ['GDN', 'Meta', 'Facebook', 'DemGen', 'Programmatic', 'Mailing'];
+    const SOURCES = ['GDN', 'Meta', 'Facebook', 'DemGen', 'Programmatic', 'Mailing', 'WP'];
+    // Źródła, w których CM360 SERWUJE kreacje: strona docelowa jest per AUDIENCJA, więc
+    // przy adresie wybiera się audiencję, a słowo klucza staje się nazwą linii w nazwie
+    // placementu. Lustro bloku `serving` z source_map.json — rozstrzyga i tak backend.
+    const AUDIENCES = { Programmatic: ['default', 'prospecting', 'retargeting'] };
 
     function QuestionsPanel({ questions, answers, onAnswer, onApply, pending, busy }) {
       if (!questions.length) return null;
@@ -372,6 +376,86 @@
           </div>
         </div>
       );
+    }
+
+    // MAILING: strony docelowe pochodzą z linków w `index.html`, a nie z formularza.
+    // Automat nie zgaduje, który link jest CTA — nazywa je a, b, c i to człowiek je
+    // rozpoznaje. Dlatego edytor: etykieta + adres per link, z możliwością dopisania
+    // linku, którego w paczce nie było (w realnych wysyłkach CTA bywa `#`).
+    function MailingPanel({ proposal, busy, onApply }) {
+        const mails = proposal.mailings || [];
+        const init = () => {
+          const by = {};
+          (proposal.lines || []).forEach(l => {
+            const no = l.mail || l.number;
+            (by[no] = by[no] || []).push({ label: l.label || '', url: l.url || '' });
+          });
+          return by;
+        };
+        const [rows, setRows] = useState(init);
+        const [dirty, setDirty] = useState(false);
+        useEffect(() => { setRows(init()); setDirty(false); },
+                  [JSON.stringify((proposal.lines || []).map(l => [l.lpName, l.url]))]);
+        const set = (no, i, patch) => {
+          setRows(r => ({ ...r, [no]: r[no].map((x, j) => j === i ? { ...x, ...patch } : x) }));
+          setDirty(true);
+        };
+        const add = no => {
+          setRows(r => ({ ...r, [no]: [...(r[no] || []), { label: '', url: '' }] }));
+          setDirty(true);
+        };
+        const del = (no, i) => {
+          setRows(r => ({ ...r, [no]: r[no].filter((_, j) => j !== i) }));
+          setDirty(true);
+        };
+        const nos = Object.keys(rows).sort((a, b) => a - b);
+        return (
+          <div className="card">
+            <div className="lines-title">✉️ Linki z mailingu</div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Każdy link to osobna strona docelowa i osobna kreacja na adzie wysyłki.
+              Nazwij je po tym, czym są (<code>mbank</code>, <code>regulamin</code>,
+              <code>CTA</code>) — nazwa wchodzi do LP (<code>mail1-mbank</code>) i kreacji
+              (<code>mail-1-mbank</code>). UTM-y są już doklejone, adres możesz zmienić.
+            </div>
+            {mails.map((m, mi) => (
+              <div key={mi} className="hint" style={{ marginBottom: 4 }}>
+                📄 {m.file} — {(m.links || []).length} linków
+                {(m.skippedLinks || []).length > 0 && <span style={{ color: 'var(--warn-ink)' }}>
+                  {' '}· ⚠️ bez adresu: {m.skippedLinks.join(', ')} — jeśli któryś to CTA,
+                  dopisz go niżej z właściwym adresem
+                </span>}
+              </div>
+            ))}
+            {nos.map(no => (
+              <div key={no} className="line-grp used" style={{ marginTop: 8 }}>
+                <div className="line-hdr">wysyłka mail-{no} <span className="hint">
+                  → ad <b>mail-{no}</b></span></div>
+                {(rows[no] || []).map((r, i) => (
+                  <div className="lp-row" key={i}>
+                    <span className="lp-no">{i + 1}</span>
+                    <input type="text" value={r.url} placeholder="https://… (adres z UTM-ami)"
+                      onChange={e => set(no, i, { url: e.target.value })} />
+                    <input type="text" className="lp-kw" value={r.label}
+                      placeholder="nazwa linku (np. mbank)"
+                      onChange={e => set(no, i, { label: e.target.value })} />
+                    <button className="btn mini" title="Usuń ten link"
+                      onClick={() => del(no, i)}>✕</button>
+                  </div>
+                ))}
+                <button className="btn mini" onClick={() => add(no)}>➕ dodaj link</button>
+              </div>
+            ))}
+            <div className="line-edit-bar" style={{ marginTop: 10 }}>
+              <button className="btn primary" disabled={!dirty || busy}
+                onClick={() => onApply(rows)}>✔ Zatwierdź linki →</button>
+              <span className="hint">
+                {dirty ? '⚠️ Zmiany nie są jeszcze w drzewie — kliknij, żeby przebudować.'
+                       : 'Drzewo poniżej odpowiada tym linkom.'}
+              </span>
+            </div>
+          </div>
+        );
     }
 
     // Podgląd tego, co JEST w kampanii w CM360 na Site tego zlecenia: placement -> ad ->
@@ -662,8 +746,11 @@
           return out;
         });
       };
-      // keywords must stay positionally aligned with links, so filter ROWS, not urls
-      const rows = lps.filter(x => x.url.trim());
+      // Wszystko, co jedzie do backendu, jest keyowane POZYCJĄ, a wiersz bez adresu
+      // wypada z listy — więc trzymam mapowanie „pozycja w payloadzie -> wiersz w UI",
+      // inaczej puste okienko na górze przesuwałoby słowa klucza i audiencje o jeden.
+      const rowIdx = lps.map((x, i) => i).filter(i => lps[i].url.trim());
+      const rows = rowIdx.map(i => lps[i]);
       const links = rows.map(x => x.url.trim());
       const keywords = rows.map(x => x.kw.trim());
       const [source, setSource] = useState('GDN');
@@ -674,7 +761,27 @@
       const multiSrc = sources.length > 1;
       // adres należy do konkretnego źródła (jego LP dostanie ten sufiks); puste = główne
       const linkSources = {};
-      rows.forEach((r, i) => { if (multiSrc && r.src && sources.includes(r.src)) linkSources[i] = r.src; });
+      rows.forEach((r, pos) => {
+        if (multiSrc && r.src && sources.includes(r.src)) linkSources[pos] = r.src;
+      });
+      // źródło serwujące (programmatic): przy adresie wybiera się AUDIENCJĘ, bo strona
+      // docelowa jest jedna na audiencję; bez wskazania backend przypisze je po kolei
+      // Audiencje dotyczą TYLKO źródła serwującego, i to per wiersz: w jednym zleceniu
+      // programmatic może stać obok Mety, a wtedy przy adresie Mety nie ma czego wybierać.
+      const srcOfRow = i => (multiSrc && lps[i] && lps[i].src && sources.includes(lps[i].src))
+        ? lps[i].src : source;
+      const audListOfRow = i => AUDIENCES[srcOfRow(i)] || null;
+      const audOfRow = i => {
+        const list = audListOfRow(i);
+        if (!list) return null;
+        if (lps[i] && lps[i].aud && list.includes(lps[i].aud)) return lps[i].aud;
+        // domyślnie po kolei, licząc tylko wiersze TEGO SAMEGO źródła
+        const ord = lps.slice(0, i).filter((_, j) => srcOfRow(j) === srcOfRow(i)).length;
+        return list[ord] || list[list.length - 1];
+      };
+      const anyAud = lps.some((_, i) => audListOfRow(i));
+      const linkAudiences = {};
+      rowIdx.forEach((src, pos) => { const a = audOfRow(src); if (a) linkAudiences[pos] = a; });
       const [message, setMessage] = useState('');
       const [file, setFile] = useState(null);
       const [busy, setBusy] = useState(false);
@@ -737,7 +844,7 @@
           const resp = await fetch('/api/build-proposal', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ links, keywords, source, sources, linkSources,
-                                   message, zipB64: b64, zipName: file.name,
+                                   linkAudiences, message, zipB64: b64, zipName: file.name,
                                    ...(extra || {}) }),
           });
           const data = await resp.json();
@@ -776,18 +883,30 @@
                     onChange={e => setLp(i, { src: e.target.value })}>
                     {sources.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>}
+                  {audListOfRow(i) && <select className="lp-src" value={audOfRow(i)}
+                    onChange={e => setLp(i, { aud: e.target.value })}>
+                    {audListOfRow(i).map(a => <option key={a} value={a}>{a}</option>)}
+                  </select>}
                   <button className="btn mini" title="Usuń ten adres"
                     disabled={lps.length === 1 && !row.url && !row.kw}
                     onClick={() => delLp(i)}>✕</button>
                 </div>
               ))}
               <button className="btn mini" onClick={addLp}>➕ dodaj adres</button>
-              <div className="hint" style={{ marginTop: 6 }}>
+              {anyAud && <div className="hint" style={{ marginTop: 6 }}>
+                <b>{sources.filter(s => AUDIENCES[s]).join(', ')}</b>: strona docelowa jest
+                jedna na audiencję — podaj trzy adresy
+                (ten sam człon, inny parametr) i wybierz przy każdym audiencję. LP wyjdą jako
+                <code>linia1-programmatic-default</code> / <code>-prospecting</code> /
+                <code>-retargeting</code>, a <b>słowo klucza to nazwa linii</b> w nazwie
+                placementu (<code>kampania_slowo_dd.mm.rrrr-prospecting</code>).
+              </div>}
+              {!anyAud && <div className="hint" style={{ marginTop: 6 }}>
                 Słowo klucza trafia do nazwy: <code>linia3-FB-lookalike</code> (creative
                 <code>linia3-lookalike</code>). Puste = narzędzie wyprowadzi etykietę z tego,
                 czym adresy się różnią — przy długim <code>utm_campaign</code> wychodzi z tego
                 nazwa, której nikt nie chce.
-              </div>
+              </div>}
               {links.length > 1 && <div className="hint">
                 {links.length} adresy — narzędzie samo spróbuje przypisać foldery z zipa do
                 poszczególnych stron; materiały bez pasującego folderu trafią pod każdą z nich.
@@ -1517,6 +1636,8 @@
 
             <QuestionsPanel questions={p.questions || []} answers={answers} onAnswer={setAnswer}
               onApply={applyFolderAnswers} pending={foldersDirty} busy={!!pending} />
+            {(p.mailings || []).length > 0 && <MailingPanel proposal={p} busy={!!pending}
+              onApply={rows => rebuildOn({ ...campaignExtra(), mailLinks: rows })} />}
             <LinesPanel lines={p.lines || [p.line]} source={p.source}
               existing={p.existingLines || []} folders={p.lpFolders}
               onUpdateLine={updateLine} busy={!!pending}
@@ -1645,7 +1766,11 @@
                       <div className="row">
                         📄 <EditableText value={pl.name} onChange={v => renamePl(pi, v)} /> <Badge s={pl.status} />
                         {pl.group && <span className="hint"> · grupa {pl.group}</span>}
-                        <span className="hint"> · {pl.site} · {pl.size}</span>
+                        {/* placement serwujący ma ZADEKLAROWANE wymiary (kilka), a nie
+                            jeden rozmiar 1x1 jak placement trackingowy */}
+                        <span className="hint"> · {pl.site} · {pl.serving
+                          ? `${(pl.sizes || []).length} wymiarów: ${(pl.sizes || []).join(', ')}`
+                          : pl.size}</span>
                         <AddPicker label="+ ad" options={existingAdOptions(pl.name)}
                           optionLabel={o => `${o.name} (${o.creatives.length} creative: ${o.creatives.join(', ') || '—'})`}
                           onPick={o => addAd(pi, o.name, o.creatives)}
