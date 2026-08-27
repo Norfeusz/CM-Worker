@@ -10,6 +10,7 @@ Rules (confirmed with user):
  * line number = tied to the destination PATH within a campaign; source suffix
                  (GDN/FB/...) comes from the UI. Same path => same line number.
 """
+import difflib
 import re
 from urllib.parse import parse_qs, urlparse
 
@@ -88,22 +89,66 @@ def _common_leading(a, b):
     return c
 
 
-def match_campaigns(url, anchor, campaign_lps):
+# Próg podobieństwa DWÓCH członów ścieżki, przy którym uznajemy je za ten sam człon.
+# Powód: klient numeruje odsłony tej samej strony (`szkola-2` -> `szkola-8`) i to nadal
+# jedna kampania, a dokładne porównanie dawało wtedy zero. Świadomie NIE patrzymy na
+# `utm_campaign` — te same wartości wracają w różnych kampaniach, więc jako sygnał
+# dopasowania był zdecydowanie zbyt luźny (zgłoszone przez usera).
+SEGMENT_MATCH_RATIO = 0.7
+
+
+def _seg_ratio(a, b):
+    """Podobieństwo dwóch członów ścieżki, 0..1 (`szkola-8` vs `szkola-2` -> 0.88)."""
+    return difflib.SequenceMatcher(None, (a or "").lower(), (b or "").lower()).ratio()
+
+
+def _common_near(a, b, ratio=SEGMENT_MATCH_RATIO):
+    """Ile wiodących członów zgadza się DOKŁADNIE albo jest podobnych powyżej progu."""
+    c = 0
+    for x, y in zip(a, b):
+        if x.lower() != y.lower() and _seg_ratio(x, y) < ratio:
+            break
+        c += 1
+    return c
+
+
+def match_campaigns(url, anchor, campaign_lps, ratio=SEGMENT_MATCH_RATIO):
     """campaign_lps: list of {campaignId, campaignName, lpName, lpUrl}.
-    Returns (ranked_candidates, suggest_new_campaign:bool)."""
+    Returns (ranked_candidates, suggest_new_campaign:bool).
+
+    Podstawą jest wspólny prefiks członów ścieżki (`common`, dokładny) — tak jak od
+    początku. Dodatkiem jest `near`: ten sam prefiks, ale człon może się różnić w
+    granicach progu podobieństwa (`szkola-8` ↔ `szkola-2`). Dokładne dopasowanie zawsze
+    wygrywa w rankingu; podobieństwo tylko ratuje przypadki, w których jedyny człon
+    ścieżki różni się odsłoną.
+
+    `why` mówi, co zadecydowało — trafia do UI, żeby dopasowanie nie było magią i żeby
+    było widać, po którym LP kampania się dopasowała.
+    """
     target = remaining_path(url, anchor) or []
     by_camp = {}
     for row in campaign_lps:
         rem = remaining_path(row["lpUrl"], anchor) or []
         common = _common_leading(target, rem)
-        cur = by_camp.get(row["campaignId"])
+        near = _common_near(target, rem, ratio)
+        if common:
+            why = f"ta sama ścieżka ({'/'.join(rem[:common])})"
+        elif near:
+            pairs = ", ".join(f"{x} ≈ {y} ({_seg_ratio(x, y):.0%})"
+                              for x, y in zip(target[:near], rem[:near]))
+            why = f"podobny człon ścieżki: {pairs}"
+        else:
+            why = "brak wspólnej ścieżki"
         cand = {"campaignId": row["campaignId"], "campaignName": row["campaignName"],
-                "common": common, "lpName": row.get("lpName"), "lpUrl": row["lpUrl"],
+                "common": common, "near": near, "why": why,
+                "lpName": row.get("lpName"), "lpUrl": row["lpUrl"],
                 "lpRemaining": "/".join(rem)}
-        if not cur or common > cur["common"]:
+        cur = by_camp.get(row["campaignId"])
+        if not cur or (common, near) > (cur["common"], cur["near"]):
             by_camp[row["campaignId"]] = cand
-    ranked = sorted(by_camp.values(), key=lambda c: c["common"], reverse=True)
-    suggest_new = not ranked or ranked[0]["common"] == 0
+    ranked = sorted(by_camp.values(), key=lambda c: (c["common"], c["near"]), reverse=True)
+    best = ranked[0] if ranked else None
+    suggest_new = not best or best["near"] == 0
     return ranked, suggest_new
 
 

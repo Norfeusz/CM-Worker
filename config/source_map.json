@@ -17,7 +17,7 @@
                                   "placementName": "{campaign}_{line}_{date}-{audience}", "dateFormat": "%d.%m.%Y",
                                   "costStructure": "CPM", "paymentSource": "PLACEMENT_AGENCY_PAID", "endYears": 3 } },
     "Mailing":     { "site": "mailsales.pl",    "placementByFormat": { "Mailing": "Mailing", "Display": "Mailing" },                     "adKey": "dimension",
-                     "mailing": { "utm": "utm_source=mailing&utm_medium=cpc&utm_campaign={campaign}" } },
+                     "mailing": { "utm": "utm_source=mailing&utm_medium=cpc&utm_campaign={campaign}", "ctaLabel": "CTA" } },
     "WP":          { "site": "CG_WP",           "placementByFormat": { "Display": "Display" },                                          "adKey": "dimension", "lpSource": "WP" }
   }
 }

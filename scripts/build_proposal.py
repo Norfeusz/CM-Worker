@@ -296,7 +296,7 @@ def group_source(group, selected):
     return next((s for s in selected if s.lower() in (hint, name)), None)
 
 
-def mailing_lines(parsed, conf, campaign, start_no=1, override=None):
+def mailing_lines(parsed, conf, campaign, start_no=1, override=None, main_url=None):
     """Strony docelowe i kreacje wysyłek z paczki — wejście dla `build_proposal(lines=…)`.
 
     Jedna wysyłka = jeden plik HTML = jeden ad; każdy unikalny link http w tym HTML-u =
@@ -305,9 +305,14 @@ def mailing_lines(parsed, conf, campaign, start_no=1, override=None):
 
     `override` to poprawki użytkownika z UI: `{"1": [{"label": "mbank", "url": "…"}, …]}`
     keyowane numerem wysyłki. Podany label/url wygrywa; brak = wersja z paczki + UTM-y.
+
+    `main_url` to adres ze zlecenia (pole „Adresy LP"). Gdy w wysyłce jest link-zaślepka
+    (`#`), dokładamy z niego wiersz `CTA`: to właśnie GŁÓWNY button, któremu agencja nie
+    wstawiła adresu, a bez niego w strukturze brakowałoby najważniejszej kreacji.
     """
     mconf = conf.get("mailing") or {}
     utm_tpl = mconf.get("utm") or ""
+    cta_label = mconf.get("ctaLabel") or "CTA"
     camp_slug = matcher.normalize(campaign.get("name") or "") or "kampania"
     utm = utm_tpl.format(campaign=camp_slug) if utm_tpl else ""
     out = []
@@ -315,12 +320,18 @@ def mailing_lines(parsed, conf, campaign, start_no=1, override=None):
         no = start_no + m_i
         rows = list((override or {}).get(str(no)) or (override or {}).get(no) or [])
         links = mail.get("links") or []
-        labels = matcher.mail_labels(max(len(links), len(rows)))
-        for i, label in enumerate(labels):
+        # (adres z paczki, domyślna etykieta) — litery po kolei, a na końcu CTA
+        entries = list(zip(links, matcher.mail_labels(len(links))))
+        if (mail.get("skippedLinks") or []) and main_url:
+            entries.append((main_url, cta_label))
+        # wiersze dopisane ręcznie w UI wychodzą poza to, co dała paczka
+        entries += [("", lab) for lab in
+                    matcher.mail_labels(len(rows))[len(entries):len(rows)]]
+        for i, (src_url, label) in enumerate(entries):
             row = rows[i] if i < len(rows) else {}
             lab = (row.get("label") or label).strip() or label
             url = (row.get("url") if row.get("url") is not None
-                   else _with_utm(links[i] if i < len(links) else "", utm))
+                   else _with_utm(src_url, utm))
             out.append({
                 "lineNumber": no, "mail": no, "label": lab,
                 "lpName": matcher.mail_lp_name(no, lab),

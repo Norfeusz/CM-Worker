@@ -81,6 +81,18 @@ def _check_uri(uri):
                     f"SAFETY guard: blocked advertiserId filter {v} "
                     f"(allowed: {sorted(ALLOWED_ADVERTISER_IDS)}). URI={uri}")
 
+    # 5) advertiserId jako SEGMENT ŚCIEŻKI — upload assetów kreacji ma go właśnie tam:
+    #    /userprofiles/{profileId}/creativeAssets/{advertiserId}/creativeAssets
+    #    Ani reguła 2 (`/advertisers/{id}`), ani 4 (parametr zapytania), ani `_check_body`
+    #    (ciało niesie tylko `assetIdentifier`) tego nie widziały, więc upload na obcego
+    #    advertisera przechodziłby przez allowlistę. Znalezione przed pierwszym realnym
+    #    zapisem programmatica.
+    m = re.search(r"/creativeAssets/(\d+)", path)
+    if m and m.group(1) not in ALLOWED_ADVERTISER_IDS:
+        raise RuntimeError(
+            f"SAFETY guard: blocked creative-asset upload for advertiser {m.group(1)} "
+            f"(allowed: {sorted(ALLOWED_ADVERTISER_IDS)}). URI={uri}")
+
 
 def _install_read_only_guard():
     global _GUARD_INSTALLED

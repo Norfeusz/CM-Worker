@@ -11,6 +11,7 @@ import tempfile
 import zipfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "parser"))
 import parse_zip
+import repack
 
 passed = failed = 0
 
@@ -131,6 +132,129 @@ check("foldery wymiarów nie są grupami", parse_zip.parse(plain)["groups"], [])
 setsonly = _outer({"p/linia1/300x250/index.html": "<html></html>",
                    "p/linia2/300x250/index.html": "<html></html>"})
 check("foldery zestawów nie są grupami", parse_zip.parse(setsonly)["groups"], [])
+
+print("\nKILKA PACZEK w jednym zleceniu — scalanie z zachowaniem źródła paczki:")
+z_gdn = _outer({"banner_300x250/index.html": "<html></html>",
+                "banner_160x600/index.html": "<html></html>"})
+z_prog = _outer({"banner_970x250/index.html": "<html></html>"})
+merged = parse_zip.merge_parsed([
+    {"parsed": parse_zip.parse(z_gdn), "source": "GDN", "path": z_gdn, "name": "hh_gdn.zip"},
+    {"parsed": parse_zip.parse(z_prog), "source": "Programmatic", "path": z_prog,
+     "name": "hh_programmatic.zip"}])
+check("jednostki obu paczek w jednej strukturze", merged["n_units"], 3)
+check("każda jednostka wie, z którego ŹRÓDŁA pochodzi",
+      sorted({(u["group"], u["dimension"]) for u in merged["units"]}),
+      [("GDN", "160x600"), ("GDN", "300x250"), ("Programmatic", "970x250")])
+check("...i z którego PLIKU (dwie paczki mogą mieć te same ścieżki w środku)",
+      sorted({u["_zipName"] for u in merged["units"]}),
+      ["hh_gdn.zip", "hh_programmatic.zip"])
+check("źródła paczek stają się grupami", [g["name"] for g in merged["groups"]],
+      ["GDN", "Programmatic"])
+check("wymiary zsumowane", merged["dimensions"], ["160x600", "300x250", "970x250"])
+check("podsumowanie paczek dla UI",
+      [(p["name"], p["source"], p["units"]) for p in merged["packages"]],
+      [("hh_gdn.zip", "GDN", 2), ("hh_programmatic.zip", "Programmatic", 1)])
+
+# podział WEWNĄTRZ paczki jest dokładniejszy niż przypisanie całego pliku
+z_mixed = _outer({"GDN/300x250/index.html": "<html></html>",
+                  "WP/970x300/index.html": "<html></html>"})
+mixed = parse_zip.merge_parsed([
+    {"parsed": parse_zip.parse(z_mixed), "source": "Programmatic", "path": z_mixed,
+     "name": "wszystko.zip"}])
+check("foldery w środku paczki wygrywają nad przypisaniem pliku",
+      sorted({u["group"] for u in mixed["units"]}), ["GDN", "WP"])
+check("...więc materiał GDN nie wchodzi do zlecenia programmatica",
+      any(u["group"] == "Programmatic" for u in mixed["units"]), False)
+
+check("ostrzeżenia niosą nazwę paczki, której dotyczą",
+      all(w.startswith("hh_gdn.zip: ") or w.startswith("hh_programmatic.zip: ")
+          for w in merged["warnings"]), True)
+one = parse_zip.parse(z_gdn)
+check("jedna paczka bez przypisanego źródła -> struktura bez zmian",
+      parse_zip.merge_parsed([{"parsed": one, "path": z_gdn, "name": "x.zip"}]) is one, True)
+
+# materiał do wgrania bierze się z WŁASNEJ paczki jednostki
+u_prog = [u for u in merged["units"] if u["dimension"] == "970x250"][0]
+name_p, data_p = repack.unit_asset(z_gdn, u_prog)     # celowo zła paczka w argumencie
+check("upload bierze plik z paczki jednostki, nie z pierwszej z listy",
+      (name_p, len(data_p) > 0), ("970x250.zip", True))
+
+print("\nREPAKOWANIE — jeden zip na wymiar, HTML w korzeniu (wymóg usera i CM):")
+
+
+def _banner_zip(dim, wrap=None, junk=False):
+    """Zip jednego banera; `wrap` = folder-opakowanie, `junk` = śmieci macOS."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        p = f"{wrap}/" if wrap else ""
+        z.writestr(f"{p}{dim}.html", "<html></html>")
+        z.writestr(f"{p}images/x.png", b"x")
+        if junk:
+            z.writestr("__MACOSX/._x", b"j")
+            z.writestr(f"{p}.DS_Store", b"j")
+    return buf.getvalue()
+
+
+def _pkg(dims, ready=False):
+    """Paczka per źródło: foldery wymiarów, opcjonalnie z GOTOWYMI zipami obok."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for d in dims:
+            z.writestr(f"{d}/index.html", "<html></html>")
+            z.writestr(f"{d}/img.png", b"x")
+            if ready:
+                z.writestr(f"{d}.zip", _banner_zip(d, wrap=d))
+    return buf.getvalue()
+
+
+# 1) paczka per źródło z gotowymi zipami — bierzemy je, ale wyrównujemy kształt.
+# Dwa wymiary, bo paczką (a nie jednym banerem) jest zip z KILKOMA wymiarami w środku.
+p_ready = _outer({"KV1_x/pack_kv1_gdn.zip": _pkg(["300x250", "160x600"], ready=True)})
+u = [x for x in parse_zip.parse(p_ready)["units"] if x["dimension"] == "300x250"][0]
+name, data = repack.unit_asset(p_ready, u)
+inner = zipfile.ZipFile(io.BytesIO(data)).namelist()
+check("nazwa zipa to sam wymiar", name, "300x250.zip")
+check("gotowy zip dostawcy: folder-opakowanie obcięte",
+      sorted(inner), ["300x250.html", "images/x.png"])
+
+# 2) paczka per źródło BEZ gotowych zipów — pakujemy folder wymiaru
+p_dirs = _outer({"KV1_x/pack_kv1_gdn.zip": _pkg(["300x250", "160x600"])})
+u2 = [x for x in parse_zip.parse(p_dirs)["units"] if x["dimension"] == "160x600"][0]
+n2, d2 = repack.unit_asset(p_dirs, u2)
+check("folder wymiaru spakowany, prefiks obcięty",
+      (n2, sorted(zipfile.ZipFile(io.BytesIO(d2)).namelist())),
+      ("160x600.zip", ["img.png", "index.html"]))
+check("materiał drugiego wymiaru NIE wchodzi do tego zipa",
+      any("300x250" in x for x in zipfile.ZipFile(io.BytesIO(d2)).namelist()), False)
+
+# 3) zip = jeden baner, z opakowaniem i śmieciami macOS
+p_one = _outer({"out/500x400.zip": _banner_zip("500x400", wrap="500x400", junk=True)})
+u3 = parse_zip.parse(p_one)["units"][0]
+n3, d3 = repack.unit_asset(p_one, u3)
+check("zip jednego banera: opakowanie obcięte, śmieci wyrzucone",
+      (n3, sorted(zipfile.ZipFile(io.BytesIO(d3)).namelist())),
+      ("500x400.zip", ["500x400.html", "images/x.png"]))
+
+# 4) luźne pliki w folderze
+p_loose = _outer({"GDN/banner_300x250/index.html": "<html></html>",
+                  "GDN/banner_300x250/images/a.png": b"x",
+                  "GDN/banner_160x600/index.html": "<html></html>"})
+u4 = [x for x in parse_zip.parse(p_loose)["units"] if x["dimension"] == "300x250"][0]
+n4, d4 = repack.unit_asset(p_loose, u4)
+check("luźne pliki spakowane, HTML w korzeniu",
+      (n4, sorted(zipfile.ZipFile(io.BytesIO(d4)).namelist())),
+      ("300x250.zip", ["images/a.png", "index.html"]))
+
+# 5) brak materiału to jawny błąd, nie cicha pusta kreacja
+try:
+    repack.unit_asset(p_loose, {"dimension": "999x999", "source_path": "GDN/nie_ma"})
+    check("brak plików -> błąd", "przeszło", "ValueError")
+except ValueError:
+    check("brak plików -> jawny błąd, nie pusty zip", True, True)
+check("plan pokazuje rozmiary bez uploadu",
+      [(a["dimension"], a["bytes"] > 0, a["error"]) for a in
+       repack.asset_plan(p_loose, parse_zip.parse(p_loose)["units"])],
+      [("160x600", True, None), ("300x250", True, None)])
 
 print("\nMAILING — linki z index.html (jednostką jest wysyłka, nie baner):")
 MAIL_HTML = """<html><body>

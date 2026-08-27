@@ -477,6 +477,30 @@ check("tagi = ad × kreacje", len(mprop["tags"]), 3)
 check("mailing nie pyta o grupy/formaty (nie ma wymiarów)", mprop["questions"], [])
 check("linki bez adresu widoczne w propozycji",
       mprop["mailings"][0]["skippedLinks"], ["#"])
+
+# Zgłoszone: główny button wysyłki ma w kreacji zaślepkę `#`, więc wypadał ze struktury,
+# a to najważniejsza kreacja. Adres ze zlecenia (pole „Adresy LP") jest właśnie jego.
+MAIN = ("https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-8/"
+        "?utm_source=mailing&utm_medium=cpc&utm_campaign=nnw_08_26")
+with_cta = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1, main_url=MAIN)
+check("zaślepka `#` + adres ze zlecenia -> dochodzi wiersz CTA",
+      [(l["label"], l["creativeName"], l["lpName"]) for l in with_cta][-1:],
+      [("CTA", "mail-1-CTA", "mail1-CTA")])
+check("CTA dostaje adres ze zlecenia, bez drugich UTM-ów",
+      with_cta[-1]["url"], MAIN)
+check("...a etykiety linków z paczki się NIE przesuwają",
+      [l["label"] for l in with_cta], ["a", "b", "c", "CTA"])
+# bez zaślepki nie dokładamy nic — wszystkie buttony mają swoje adresy
+NO_SKIP = dict(PARSED_MAIL, mailings=[dict(PARSED_MAIL["mailings"][0], skippedLinks=[])])
+check("brak zaślepki -> brak dodatkowego wiersza",
+      len(B.mailing_lines(NO_SKIP, MCONF, CAMP_MAIL, start_no=1, main_url=MAIN)), 3)
+check("zaślepka bez adresu w zleceniu -> też nic nie dokładamy (nie ma czego)",
+      len(B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1)), 3)
+# nazwa nadana przez usera wygrywa nad domyślnym CTA
+check("etykietę CTA można nadpisać",
+      B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1, main_url=MAIN,
+                      override={"1": [{}, {}, {}, {"label": "glowny"}]})[-1]["lpName"],
+      "mail1-glowny")
 # poprawki użytkownika: nazwy linków + dopisany CTA, którego w paczce nie było (`#`)
 OVR = {"1": [{"label": "mbank"}, {"label": "regulamin"}, {"label": "slowniczek"},
              {"label": "CTA", "url": "https://www.mbank.pl/lp2/sierpien-2/"}]}

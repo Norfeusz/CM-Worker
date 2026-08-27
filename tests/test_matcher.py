@@ -58,6 +58,52 @@ check("nieruchomosci/krowa -> same campaign (shares 'nieruchomosci')",
 ranked2, new2 = M.match_campaigns(
     "https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/zwierzeta/krowa/",
     UBEZP, UBEZP_CAMPS)
+print("\nDOPASOWANIE KAMPANII — sygnały poza dokładną ścieżką (zgłoszenie z żywej sesji):")
+UBEZP = ["indywidualny", "ubezpieczenia"]
+SZK8 = ("https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-8/"
+        "?utm_source=mailing&utm_medium=cpc&utm_campaign=nnw_08_26")
+SZK2 = ("https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-2/"
+        "?utm_source=dgen&utm_medium=cpc&utm_campaign=nnw_08_26")
+CAMP_NNW = [{"campaignId": "C1", "campaignName": "NNW", "lpName": "linia1-DemGen",
+             "lpUrl": SZK2}]
+r_nnw, new_nnw = M.match_campaigns(SZK8, UBEZP, CAMP_NNW)
+# po anchorze zostaje JEDEN człon i różni się numerem odsłony, więc dokładne porównanie
+# dawało zero i narzędzie proponowało nową kampanię obok istniejącej
+check("szkola-8 obok szkola-2 -> TA SAMA kampania, nie nowa", new_nnw, False)
+check("...zadecydowało PODOBIEŃSTWO członu, nie parametry adresu",
+      r_nnw[0]["why"].startswith("podobny człon ścieżki: szkola-8 ≈ szkola-2"), True)
+check("...dokładnego dopasowania nadal nie ma", r_nnw[0]["common"], 0)
+
+# `utm_campaign` NIE jest sygnałem: te same wartości wracają w różnych kampaniach,
+# więc jako podstawa dopasowania było zbyt luźne (zgłoszone przez usera)
+INNA = [{"campaignId": "CX", "campaignName": "Inna", "lpName": "linia1-GDN",
+         "lpUrl": "https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/podroze/"
+                  "?utm_source=gdn&utm_campaign=nnw_08_26"}]
+check("to samo utm_campaign przy INNEJ stronie nie dopasowuje",
+      M.match_campaigns(SZK8, UBEZP, INNA)[1], True)
+
+# dokładna ścieżka zawsze wygrywa w rankingu z samym podobieństwem
+r_rank, _ = M.match_campaigns(SZK8, UBEZP, CAMP_NNW + [
+    {"campaignId": "C2", "campaignName": "Szkola 8", "lpName": "linia1-GDN",
+     "lpUrl": SZK8}])
+check("dokładna ścieżka wygrywa z podobieństwem",
+      (r_rank[0]["campaignId"], r_rank[0]["why"]), ("C2", "ta sama ścieżka (szkola-8)"))
+
+print("\npróg podobieństwa członu — pary z realnych kampanii:")
+check("szkola-8 ≈ szkola-2 (88%) łapie", M._seg_ratio("szkola-8", "szkola-2") >= 0.7, True)
+check("szkola-8 ≈ szkola-18 (94%) łapie",
+      M._seg_ratio("szkola-8", "szkola-18") >= 0.7, True)
+check("household ≈ household-2 (90%) łapie",
+      M._seg_ratio("household", "household-2") >= 0.7, True)
+for a, b in [("biedronka", "google"), ("konta", "kredyty"), ("1000", "other"),
+             ("przenosze-kredyt", "kredyt-hipoteczny"), ("mkonto", "mkonto-intensive")]:
+    check(f"{a} vs {b} NIE łapie ({M._seg_ratio(a, b):.0%})",
+          M._seg_ratio(a, b) >= 0.7, False)
+check("próg jest jedną stałą, do podkręcenia w jednym miejscu",
+      M.SEGMENT_MATCH_RATIO, 0.7)
+check("...i da się go podać per wywołanie",
+      M.match_campaigns(SZK8, UBEZP, CAMP_NNW, ratio=0.95)[1], True)
+
 check("zwierzeta/krowa -> suggest NEW campaign (no shared segment)",
       (new2, ranked2[0]["common"]), (True, 0))
 

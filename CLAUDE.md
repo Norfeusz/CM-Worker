@@ -37,6 +37,14 @@ Jeden tag = jedna trójka (Placement × Ad × Creative).
    żeby zawsze najpierw pokazać co się stanie, zanim cokolwiek się zapisze naprawdę.
 4. Zanim zdejmiesz/rozszerzysz jakikolwiek z powyższych bezpieczników — zapytaj użytkownika
    wprost. To nie jest sugestia, to twardy wymóg tego projektu.
+5. **Nowy endpoint = sprawdź, czy allowlista go WIDZI.** `_check_uri` szuka profilu w
+   ścieżce, advertisera w `/advertisers/{id}` i w parametrach zapytania, a `_check_body`
+   w ciele. `creativeAssets.insert` (upload assetów) ma `advertiserId` jako SEGMENT
+   ŚCIEŻKI (`/creativeAssets/{advertiserId}/creativeAssets`) i ciało bez `advertiserId` —
+   przechodził więc bez sprawdzenia. Załatane 27.08.2026 + `tests/test_guard.py`.
+   Przy dokładaniu writerów sprawdź kształt URI w discovery i dopisz regułę, jeśli trzeba.
+6. **Upload musi być NIE-resumable** (`resumable=False`). Bezpiecznik jest założony na
+   `HttpRequest.execute`, a upload resumable leci przez `next_chunk()` i ominąłby go.
 
 ## Jak uruchomić / testować
 
@@ -62,13 +70,16 @@ po poprawce).
 **Nie stawiaj `serve.py` jako swojego zadania w tle** — trzy razy padł, bo jego czas życia
 jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkownika o dwuklik na
 `start.bat`; własny proces stawiaj tylko na czas konkretnej weryfikacji.
-Testy offline: `py tests/test_matcher.py`, `test_proposal.py`, `test_orchestrate.py`,
-`test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`, `test_parse_zip.py`
-(**419/419 zielone na 27.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 71, proposal 130, orchestrate 44, create_site 15,
-ai_agents 104, export_tags 23, parse_zip 32.
+Testy offline (OSIEM plików): `py tests/test_matcher.py`, `test_proposal.py`,
+`test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
+`test_parse_zip.py`, `test_guard.py`
+(**475/475 zielone na 27.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 86, proposal 136, orchestrate 44, create_site 15,
+ai_agents 104, export_tags 23, parse_zip 51, guard 16.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
-dostaw bez trzymania plików klienta w repo.
+dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
+(`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
+produkcyjny mBanku i upload assetów; to czyste funkcje, więc bez sieci i bez tokenu.
 `test_ai_agents.py` stawia udawany webhook n8n na localhoście, więc testuje też transport
 i odrzucanie złych odpowiedzi — bez sieci i bez klucza API.
 
@@ -134,12 +145,17 @@ scripts/
   demo.py            # CLI: cały pipeline end-to-end bez UI (do szybkich testów/debugowania)
   plan_writes.py     # ⚠️ LEGACY — wczesny prototyp planera, ZASTĄPIONY przez orchestrate.py.
                       #    Nic go nie importuje. Bezpiecznie zignorować lub usunąć.
-parser/parse_zip.py  # analiza zipa: wymiary, warianty, typy, wykrywanie wielu grup źródłowych
+parser/
+  parse_zip.py       # analiza zipa: wymiary, warianty, typy, grupy źródeł, zestawy (KV/linia),
+                      #    mailingi (linki z index.html), scalanie KILKU paczek (merge_parsed)
+  repack.py          # materiał do wgrania: jeden zip na wymiar, HTML w korzeniu — dla writera
+                      #    programmatica; unit_asset() ogarnia wszystkie kształty dostaw
 config/
   advertiser_map.json  # URL (człony ścieżki) -> advertiser; 14 advertiserów produkcyjnych (prototyp)
   source_map.json      # source (GDN/Meta/Facebook/...) -> Site + konwencja nazw placementów + adKey
 ui/index.html        # cały frontend (React bez builda, Babel-in-browser)
-tests/               # testy offline (matcher/proposal/orchestrate) — URUCHOM JE NA START SESJI
+tests/               # OSIEM plików testów offline — URUCHOM JE NA START SESJI (475/475)
+                      #    test_guard.py = sam bezpiecznik (allowlisty, kształty URI)
 docs/n8n-ai-architecture.md  # projekt integracji n8n + Agent AI (jeszcze niezaimplementowany)
 data/
   training_examples.md   # log przykładów treningowych (zip+wiadomość -> docelowa struktura)
@@ -154,7 +170,8 @@ start.example.bat    # szablon dla nowego stanowiska
 
 ### Endpointy `scripts/serve.py` (GET serwuje też statyczne pliki z `ui/`)
 - `POST /api/build-proposal` — `{link|links[], keywords[]?, source, sources[]?,
-  linkSources{}?, message, zipB64|zipPath, campaignId?, newCampaign?, folderMap?}` →
+  linkSources{}?, linkAudiences{}?, mailLinks{}?, message,
+  zips[]|zipB64|zipPath, campaignId?, newCampaign?, folderMap?}` →
   kontrakt propozycji. `sources[]` = wszystkie źródła zlecenia (główne = `source`),
   `linkSources` = `{indeksAdresu: źródło}` (patrz sekcja „Kilka źródeł").
   `links[]` = kilka LP w jednym zleceniu (wszystkie do TEJ SAMEJ kampanii; różni advertiserzy
@@ -331,8 +348,25 @@ Mechanika (rzeczy, które się na tym wywracały):
 * Ten sam Site + ta sama nazwa placementu = jeden węzeł w propozycji (scalanie w
   `build_proposal`); wcześniej folder źródła obok materiałów luzem dawał dwa identyczne.
 
-Programmatic jest tu obsłużony jak zwykłe źródło trackingowe (1×1). **Realny upload
-assetów dla programmatic nadal NIE jest zrobiony** — patrz punkt 7 kolejki.
+## KILKA PACZEK w jednym zleceniu (27.08.2026)
+
+Dostawcy coraz częściej dzielą materiały na osobny zip per źródło, więc formularz przyjmuje
+**wiele plików naraz** (`zips: [{name, b64, source?}]`; stare `zipB64` nadal działa).
+Paczki są parsowane osobno i **scalane** w jedną strukturę (`parse_zip.merge_parsed`),
+więc cała maszyneria wielo-źródłowa działa bez zmian.
+
+* **Źródło paczki**: wskazane w UI → odczytane z NAZWY pliku (`household_gdn.zip` → GDN,
+  przez `_source_hint`) → źródło główne.
+* **Podział folderami WEWNĄTRZ paczki ma pierwszeństwo** nad przypisaniem całego pliku —
+  zip z `GDN/` i `WP/` w środku zachowuje swój podział. To trzyma zasadę usera: materiał
+  GDN nie może wejść do zlecenia programmatica.
+* Jednostka nosi `_zip`/`_zipName`: dwie paczki mogą mieć w środku identyczne ścieżki
+  (`300x250/index.html`), a `repack.unit_asset` musi wziąć plik z WŁAŚCIWEJ.
+* Ostrzeżenia parsera są prefiksowane nazwą paczki.
+* `parsed["packages"]` = podsumowanie (nazwa, źródło, liczba jednostek) dla UI i planu.
+
+Programmatic jako źródło trackingowe (1×1) działa od 06.08; **realny upload assetów**
+to Etap 2 — patrz punkt 7 kolejki. Gotowe jest już repakowanie (`parser/repack.py`).
 
 ## TRZY TRYBY ŹRÓDEŁ (27.08.2026) — tracking / serwujący / mailing
 
@@ -376,7 +410,11 @@ trzy ścieżki, wybierane blokiem w `source_map.json` (`serving` / `mailing` / b
   drugiego. **Uwaga**: `utm_campaign` w realnym arkuszu (`household_sierpien`) nie wynika
   z nazwy kampanii — user poprawia w panelu;
 * linki bez adresu (`#`, `mailto:`) **nie są kodowane, ale są raportowane** — w realnej
-  wysyłce CTA bywa placeholderem `#` i musi dostać LP dopisane ręcznie.
+  wysyłce CTA bywa placeholderem `#`;
+* **gdy w wysyłce jest zaślepka, dochodzi wiersz `CTA` z adresem ZE ZLECENIA** (pole
+  „Adresy LP"). To główny button, któremu agencja nie wstawiła adresu — bez tego w
+  strukturze brakowało najważniejszej kreacji (zgłoszone). Wiersz jest na KOŃCU, żeby
+  litery pozostałych linków się nie przesunęły przy przebudowie.
 
 **Materiały spoza rozpoznanych folderów nie wchodzą do struktury bez pytania** (życzenie
 usera po zgłoszeniu z paczki `GDN/` + `Programmatic/` + `WP/`, gdzie materiały WP zostały
@@ -390,6 +428,26 @@ konieczny — bez niego grupami stawały się foldery kart karuzeli (`1`, `2`) i
 **`WP` jako źródło** — Site `CG_WP` (id 6781651, **już istniał** na koncie; obok są `WP`,
 `Wp.pl`, `Wp.pl_mailing`, `CG_Dom.wp.pl`, `CG_Wawalove.wp.pl`). W parserze `wp` jest
 rozpoznawane **tylko jako osobne słowo** — jako podciąg trafiało w `warszawawpigulce.pl`.
+
+## Dopasowanie KAMPANII — próg podobieństwa członu (27.08.2026)
+
+Podstawą jest, jak od początku, **wspólny prefiks członów ścieżki** po anchorze
+advertisera (`common`, porównanie dokładne). Dodatkiem jest `near`: człon może się różnić
+w granicach **`SEGMENT_MATCH_RATIO = 0.7`** (`difflib`), bo klient numeruje odsłony tej
+samej strony. Zgłoszony przypadek: `szkola-8` obok `szkola-2` — po anchorze zostaje JEDEN
+człon, dokładne porównanie dawało 0 i narzędzie proponowało nową kampanię obok istniejącej.
+Podobieństwa na realnych parach: `szkola-8`↔`szkola-2` 88%, `household`↔`household-2` 90%,
+`biedronka`↔`google` 13%, `konta`↔`kredyty` 33%, `mkonto`↔`mkonto-intensive` 55%.
+
+**`utm_campaign` NIE jest sygnałem.** Był (jedna iteracja), user go odrzucił jako zbyt
+luźny — te same wartości wracają w różnych kampaniach. Jest na to test.
+
+`why` z rankingu ląduje w `campaign.matchedBy` i w karcie kampanii („dopasowano: …, po LP
+…, z adresu …") — to domyka punkt 11 kolejki. **Otwarte pytanie do usera**: kampania
+dopasowuje się już przy JEDNYM wspólnym członie (`standard/google/1000` vs
+`standard/biedronka/other`) — to zachowanie sprzed tej sesji; user zgłaszał, że bywa za
+luźne. Propozycje: wymagać ≥2 członów przy dłuższej ścieżce, albo nie wybierać kampanii
+automatycznie przy jednym członie (pokazać jako kandydata). Decyzji nie ma.
 
 ## Model domenowy (zwalidowany na żywych danych CM360)
 
@@ -573,6 +631,16 @@ Powiązane reguły, wszystkie z tego samego zgłoszenia:
 
 Pełny opis przypadku: `data/training_examples.md`, pozycja 3.
 
+**Repakowanie materiału do uploadu — `parser/repack.py`** (27.08.2026). Życzenie usera:
+„każdy wymiar zapakowany w osobny zip nazwany samym wymiarem". `unit_asset(zip, unit)`
+zwraca `({wymiar}.zip, bajty)` dla wszystkich trzech kształtów dostaw: gotowy zip w paczce,
+folder wymiaru w paczce, zip z jednym banerem, luźne pliki. Każdy przechodzi
+`_normalize`: śmieci systemowe wyrzucone, wspólny folder-opakowanie obcięty (HTML w
+korzeniu), **podfoldery zostają** (`images/`). Uwaga na dwie różne decyzje o tym samym
+wyglądzie: w zipie MATERIAŁU wspólny folder to opakowanie zawsze (wymiar znamy z nazwy
+pliku), a w paczce ZLECENIA folder z wymiarem jest jedynym nośnikiem tej informacji i
+`parse_zip._strip_root` go NIE obcina (inaczej dostawa jednorozmiarowa traciła wymiar).
+
 Nadal otwarte: `parse_zip` tworzy dla folderów HTML **równolegle** jednostki `html5` i
 `image` dla tych samych wymiarów (`HTML FRC`: 15 html5 + 30 image). Dziś nieszkodliwe, bo
 format bierzemy z nazwy folderu i jednostki zwijają się do tego samego ada. Zaboli, gdyby
@@ -638,8 +706,9 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    plik jest już na granicy wygodnej pracy — to najmocniejszy argument, żeby to zrobić.
 10. ~~Uwagi do wyglądu i użyteczności UI~~ — **ZROBIONE 05.08.2026** (sticky header,
    wskaźnik pracy, cofanie, styl Cube Group, ciemny motyw, pobieranie tagów, wyszarzanie).
-11. Oznaczać, **po którym LP nastąpiło automatyczne dopasowanie kampanii** (user zgłosił
-   04.08.2026, świadomie odłożone na potem). **NADAL NIEROBIONE.**
+11. ~~Oznaczać, **po którym LP nastąpiło automatyczne dopasowanie kampanii**~~ —
+   **ZROBIONE 27.08.2026**: `campaign.matchedBy` (why / link / lpName) i wiersz
+   „dopasowano: …" w karcie kampanii. Patrz „Dopasowanie KAMPANII".
 12. ~~**Etykieta z `utm_campaign` bywa za długa.**~~ — **ZROBIONE 06.08.2026** przez słowo
     klucza per adres (patrz sekcja o konwencji nazw). Automatyczne skracanie do członu przed
     cyframi świadomie NIE zostało zrobione: user podaje wprost, czego chce.
@@ -649,26 +718,64 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    bez zmian: user zgłaszał tylko placementy, a `adKey: variant_dim_card` dotyczy też
    karuzeli, gdzie bez prefiksu zostałoby samo `1`/`2`/`3`. **Do decyzji usera.**
 
-## HANDOFF — pierwsze kroki w nowej sesji
+## HANDOFF — pierwsze kroki w nowej sesji (stan na 27.08.2026, koniec dnia)
 
-1. `py tests/test_matcher.py` … i pozostałe sześć plików. **Musi być 419/419.** Jeśli nie —
-   zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
-2. Serwer: poproś usera o **dwuklik `start.bat`** (stawia serwer i otwiera przeglądarkę).
-   **Nie stawiaj `serve.py` jako swojego zadania w tle na stałe** — jego czas życia jest
-   powiązany z sesją agenta, padł już wielokrotnie. Własny proces tylko na czas konkretnej
-   weryfikacji, i pamiętaj, że **restart jest konieczny po każdej zmianie w Pythonie**
-   (moduły siedzą w pamięci procesu).
-3. Gałąź `feat/campaign-site-and-ai-agents`, PR nieotwarty. Working tree powinien być czysty.
-4. **Zmiany w promptach agentów wymagają jednego przebiegu na ŻYWYM modelu.** Dwie takie
-   zmiany czekają na weryfikację i to jest najbliższy priorytet techniczny:
-   - nowa konwencja nazw `linia{N}-{ŹRÓDŁO}[-{słowo}]` w prompcie roli (b),
-   - nowa operacja `rename_creative_all` (model musi ją WYBIERAĆ zamiast
-     `apply_creative_to_all` przy zmianie nazwy linii).
-   Atrapa webhooka w testach tego nie wyłapie — jej odpowiedzi pisze się pod własne
-   założenia. Blokada w `apply_ops` chroni niezależnie od tego, ale sam wybór operacji
-   potwierdzi tylko żywy test.
-5. Największa zaległość merytoryczna to wciąż **`promote.py`** (punkt 4) — bez niego AI jest
-   kosztem stałym, nie jednorazowym.
+1. `py tests/test_matcher.py` … i pozostałe **siedem** plików (lista wyżej).
+   **Musi być 475/475.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
+   zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
+   wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest
+   konieczny po KAŻDEJ zmianie w Pythonie** — user stracił na tym czas 27.08: zgłosił
+   „mailing nie działa", a to była poprzednia wersja modułów w pamięci procesu.
+3. **UWAGA NA STAN REPO.** Gałąź `feat/campaign-site-and-ai-agents`, PR nieotwarty, nic
+   nie wypchnięte. Dwa commity z 27.08: `a3d8dae` (słowo klucza, wiele źródeł, paczki
+   zagnieżdżone) i `14b69d3` (programmatic + mailing + WP + resztki). **W drzewie roboczym
+   zostało 12 plików NIEZACOMMITOWANYCH** — user był pytany, nie odpowiedział:
+   * dopasowanie kampanii: `utm_campaign` wycofane, próg podobieństwa 70%, `matchedBy` w UI
+   * **załatana dziura w bezpieczniku** (upload assetów) + nowy `tests/test_guard.py`
+   * nowy `parser/repack.py` (jeden zip na wymiar)
+   * wiersz `CTA` w mailingu z adresu zlecenia
+   * kilka paczek w jednym zleceniu (`zips[]`, `merge_parsed`, `_zip` na jednostce)
+   * `_strip_root` nie obcina folderu z wymiarem; `_normalize` nie spłaszcza podfolderów
+   Przed commitem: skan na `cg-pl.app.n8n.cloud`, `sk-ant`, `AIza` i na wartość
+   `N8N_TOKEN` z `start.bat` (**nie wpisuj tej wartości do żadnego pliku w repo**).
+4. **Programmatic Etap 2 — TU SKOŃCZYLIŚMY, to jest następny krok.** Gotowe: repakowanie
+   (`repack.unit_asset`), bezpiecznik pod upload, drzewo i dry-run (Etap 1). Do napisania
+   w `cm_write.py`:
+   * `creativeAssets.insert` z kanałem media, **`resumable=False`** (patrz bezpieczeństwo p.6)
+   * kreacja `DISPLAY` z assetem PRIMARY (+ backup image, jeśli CM go wymusi)
+   * placement: `size` + `additionalSizes`, `pricingSchedule` CPM, `paymentSource`
+     `PLACEMENT_AGENCY_PAID`, start = dziś, koniec = +3 lata (`serving.endYears`)
+   * ad `AD_SERVING_STANDARD_AD` ze wszystkimi kreacjami placementu + LP audiencji
+   * `LP -default` ustawione jako **default kampanii** (mechanizm jest: `add_lp_to_campaign`)
+   * eksport tagów dla placementu serwującego (dziś licznik liczy ad × creative)
+   Dwie rzeczy rozstrzygnie tylko realny insert (konto testowe nie ma ŻADNEJ kreacji
+   HTML5): czy CM wymusza `BACKUP_IMAGE` przy zipie i czy `DISPLAY` czy `HTML5_BANNER`.
+   **User ZGODZIŁ SIĘ 27.08 na jeden realny zapis jednego wymiaru na koncie testowym** —
+   ale dopiero gdy writer istnieje, i potwierdź to jeszcze raz przed uruchomieniem.
+5. **Pytania bez odpowiedzi** (nie zgaduj, dopytaj przy okazji):
+   * commit tych 12 plików? push? PR?
+   * dopasowanie kampanii przy JEDNYM wspólnym członie — za luźne? (dwie propozycje
+     w sekcji „Dopasowanie KAMPANII")
+   * `utm_campaign` w mailingu: w realnym arkuszu było `household_sierpien`, czego z nazwy
+     kampanii nie da się wyprowadzić — jest reguła czy user poprawia ręcznie?
+   * LP CTA w mailingu: w arkuszu klienta to `mail1` (bez sufiksu), u nas `mail1-CTA`
+   * nazwy adów Meta dublują nazwę placementu (`statyki_1080x1920_1` na `Statyki`) — p. 14
+   * inne oznaczenia zestawów niż `linia{N}` / `KV{N}`?
+6. **Zmiany w promptach agentów wymagają jednego przebiegu na ŻYWYM modelu.** Czekają TRZY:
+   konwencja `linia{N}-{ŹRÓDŁO}[-{słowo}]`, operacja `rename_creative_all` oraz reguły
+   `zip.by_folder` (wymiary tylko z folderu, o którym mówi uwaga; rozwijanie schematu nazw).
+   Atrapa webhooka tego nie wyłapie — jej odpowiedzi pisze się pod własne założenia.
+7. Największa zaległość merytoryczna to wciąż **`promote.py`** (punkt 4 kolejki) — bez niego
+   AI jest kosztem stałym, nie jednorazowym.
+8. **Czego nauczyła ta sesja** (warto powtórzyć w kolejnej):
+   * **weryfikuj na żywo w przeglądarce.** Offline wyglądało dobrze, a live wyszło: drugie
+     źródło znikające z drzewa (folder źródła zjadany jako folder LP), podwojone placementy
+     serwujące, audiencje przy adresie źródła nieserwującego;
+   * **gdy agent AI oddaje złą strukturę, sprawdź NAJPIERW co dostał** (`ai.request.zip`);
+   * **testy pisz na tym, co user przysłał** — realne paczki wyłapały pięć błędów, których
+     nie dałoby się wymyślić przy biurku (`\b` po `KV1`, zip w zipie, `#` jako CTA,
+     jednorozmiarowa paczka tracąca wymiar, żywa `FileList` zerowana przez `input.value`).
 
 ## Styl pracy z tym użytkownikiem (Norbert)
 

@@ -114,9 +114,16 @@ def _detect_groups(names):
 def _strip_root(names):
     """Return names with any common leading wrapper folder(s) removed,
     as list of (original, relative) pairs. Recursive: strips 'a/b/...' when
-    every entry shares the same single top folder."""
+    every entry shares the same single top folder.
+
+    Folder, który NIESIE WYMIAR (`banner_300x250/`), nie jest opakowaniem — obcięcie go
+    gubiło wymiar całej dostawy, gdy paczka miała tylko jeden rozmiar (wyłapane testem
+    scalania kilku paczek).
+    """
     rel = list(names)
-    while rel and all("/" in n for n in rel) and len({n.split("/")[0] for n in rel}) == 1:
+    while (rel and all("/" in n for n in rel)
+           and len({n.split("/")[0] for n in rel}) == 1
+           and not _dim(rel[0].split("/")[0])):
         rel = [n.split("/", 1)[1] for n in rel]
     return list(zip(names, rel))
 
@@ -386,6 +393,77 @@ def parse(path):
         # mailingi: po jednym na plik HTML, z linkami do zakodowania jako strony docelowe
         "mailings": mailings,
         "warnings": warnings,
+    }
+
+
+def merge_parsed(parts):
+    """Kilka PACZEK w jednym zleceniu -> jedna struktura wynikowa.
+
+    `parts`: [{"parsed": …, "source": "GDN"|None, "path": <ścieżka zipa>, "name": …}].
+    Dostawy przychodzą albo jako jedna paczka z folderami per źródło, albo — i to coraz
+    częściej — jako osobny zip na źródło. Scalamy je tutaj, żeby wszystko dalej (grupy,
+    placementy per źródło, pytania o obce foldery) działało jednym mechanizmem.
+
+    Zasady:
+      * jednostka, która MA już grupę z wnętrza swojej paczki (`GDN/` w środku), tę grupę
+        zachowuje — podział wewnątrz zipa jest dokładniejszy niż przypisanie całego zipa;
+      * jednostka bez grupy dostaje ŹRÓDŁO swojej paczki, więc materiały z `..._gdn.zip`
+        nie mogą wejść do zlecenia programmatica jako „resztki";
+      * `_zip` na jednostce mówi, z którego pliku ją wziąć przy uploadzie — dwie paczki
+        mogą mieć w środku identyczne ścieżki (`300x250/index.html`).
+    """
+    parts = [p for p in parts if p.get("parsed")]
+    if not parts:
+        return None
+    if len(parts) == 1 and not parts[0].get("source"):
+        return parts[0]["parsed"]
+
+    units, groups, warnings, mailings = [], [], [], []
+    dims, variants, have = set(), set(), set()
+    for p in parts:
+        pr, src = p["parsed"], p.get("source")
+        name = p.get("name") or os.path.basename(p.get("path") or "") or "paczka"
+        inner = {g["name"] for g in pr.get("groups") or []}
+        used_src = False
+        for u in pr.get("units") or []:
+            v = dict(u, _zip=p.get("path"), _zipName=name)
+            if v.get("group") is None and src:
+                v["group"] = src
+                used_src = True
+            units.append(v)
+        for g in pr.get("groups") or []:
+            if g["name"] not in have:
+                groups.append(g)
+                have.add(g["name"])
+        if used_src and src not in have:
+            groups.append({"name": src, "source_hint": src,
+                           "n_entries": sum(1 for u in units if u.get("group") == src)})
+            have.add(src)
+        dims |= {d for d in pr.get("dimensions") or []}
+        variants |= {v for v in pr.get("variants") or [] if v not in inner}
+        mailings += [dict(m, zip=p.get("path"), zipName=name)
+                     for m in pr.get("mailings") or []]
+        warnings += [f"{name}: {w}" for w in pr.get("warnings") or []]
+
+    first = parts[0]["parsed"]
+    return {
+        "file": " + ".join(p.get("name") or "?" for p in parts),
+        "source_hint": first.get("source_hint"),
+        "format_hint": first.get("format_hint"),
+        "groups": groups,
+        "asset_type": first.get("asset_type"),
+        "dimensions": sorted(dims),
+        "variants": sorted(variants),
+        "n_units": len(units),
+        "units": units,
+        "mailings": mailings,
+        "warnings": warnings,
+        # z ilu paczek to zlecenie — UI pokazuje to wprost, a plan zapisu ma czym
+        # rozstrzygnąć, z którego pliku brać materiał
+        "packages": [{"name": p.get("name"), "source": p.get("source"),
+                      "units": sum(1 for u in units
+                                   if u.get("_zipName") == (p.get("name") or ""))}
+                     for p in parts],
     }
 
 

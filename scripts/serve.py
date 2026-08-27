@@ -160,6 +160,26 @@ def _line_entries(links, keywords, labels, selected, row_sources, source_map=Non
     return urls, ent_labels, ent_kw, ent_src, addr_of
 
 
+def _parse_packages(packs, source, selected):
+    """Sparsuj i SCAL wszystkie paczki zlecenia; zwróć (parsed, ścieżka pierwszej paczki).
+
+    Źródło paczki: wskazane przez użytkownika, a gdy nie wskazał — odczytane z NAZWY
+    pliku (`household_gdn.zip` -> GDN), o ile to źródło jest w zleceniu. Nazwa pliku jest
+    tu wiarygodnym sygnałem, bo dostawcy tak właśnie rozdzielają paczki per źródło; gdy
+    nic z niej nie wynika i paczek jest kilka, przypisujemy źródło GŁÓWNE.
+    """
+    parts = []
+    for i, p in enumerate(packs):
+        parsed = parse_zip.parse(p["path"])
+        src = p.get("source")
+        if src not in selected:
+            hint = parse_zip._source_hint([p.get("name") or ""])
+            src = hint if hint in selected else (source if len(packs) > 1 else None)
+        parts.append({"parsed": parsed, "source": src, "path": p["path"],
+                      "name": p.get("name")})
+    return parse_zip.merge_parsed(parts), parts[0]["path"]
+
+
 def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None,
                    links=None, folder_map=None, keywords=None, sources=None,
                    row_sources=None, row_audiences=None, mail_links=None):
@@ -194,7 +214,11 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                          + ", ".join(bad)}
     anchor = rule.get("anchor", [])
     svc = service(read_only=True)
-    parsed = parse_zip.parse(zip_path)
+    # `zip_path` przyjmuje albo jedną ścieżkę (jak dotąd), albo listę paczek zlecenia
+    packs = (zip_path if isinstance(zip_path, list)
+             else [{"path": zip_path, "name": os.path.basename(zip_path), "source": None}])
+    parsed, zip_path = _parse_packages(packs, source,
+                                       B.selected_sources(source, sources))
     # `source` stays the config key (Site, placement names, adKey); only the LP/creative
     # names use the short form the account already holds (Facebook -> linia3-FB)
     lp_src = B.lp_source(source)
@@ -227,9 +251,11 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
         return _attach_ai(prop, parsed, message, rules)
 
     camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
+    matched_by = None
     if campaign_id:
         # explicit override (user manually picked a campaign from the browse list)
         cid = campaign_id
+        matched_by = {"why": "wybrana ręcznie"}
     else:
         # all links share one campaign; the first that matches an existing one decides,
         # so a brand-new path next to a known one doesn't force a new campaign
@@ -239,6 +265,12 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
             ranked_first = ranked_first or ranked
             if not suggest_new:
                 cid = ranked[0]["campaignId"]
+                # PO KTÓRYM adresie i DLACZEGO kampania się dopasowała — przy kilku
+                # adresach w zleceniu decyduje pierwszy, który trafił, i user ma prawo
+                # to wiedzieć bez czytania kodu (punkt 11 kolejki)
+                matched_by = {"why": ranked[0]["why"], "link": l,
+                              "lpName": ranked[0].get("lpName"),
+                              "lpUrl": ranked[0].get("lpUrl")}
                 break
         if not cid:
             return {"suggestNewCampaign": True, "advertiser": rule.get("advertiser"),
@@ -251,12 +283,13 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
     # Adres wpisany w formularzu służy tu wyłącznie do dopasowania advertisera i kampanii.
     if (B.source_conf(source) or {}).get("mailing") and parsed.get("mailings"):
         campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
-        camp_node = {"id": cid, "name": campaign["name"], "status": "existing"}
+        camp_node = {"id": cid, "name": campaign["name"], "status": "existing",
+                     "matchedBy": matched_by}
         prop = B.build_proposal(
             source, parsed, camp_node,
             lines=B.mailing_lines(parsed, B.source_conf(source), camp_node,
                                   start_no=M.next_mail_number(this),
-                                  override=mail_links),
+                                  override=mail_links, main_url=link),
             existing=existing_tree(fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)),
             campaign_lps=this, target_url=link, sources=selected)
         return _attach_ai(prop, parsed, message, rules)
@@ -269,7 +302,8 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
     campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
     state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
     prop = B.build_proposal(source, parsed,
-                            {"id": cid, "name": campaign["name"], "status": "existing"},
+                            {"id": cid, "name": campaign["name"], "status": "existing",
+                             "matchedBy": matched_by},
                             lines=lines, existing=existing_tree(state), campaign_lps=this,
                             target_url=link, line_conflict=conflict,
                             folder_match=folder_match, sources=selected,
@@ -404,16 +438,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
 
     def _build(self, req):
-        zip_path = req.get("zipPath")
-        if req.get("zipB64"):
-            tmp = os.path.join(tempfile.gettempdir(), req.get("zipName", "up.zip"))
-            with open(tmp, "wb") as f:
-                f.write(base64.b64decode(req["zipB64"].split(",")[-1]))
-            zip_path = tmp
+        # KILKA PACZEK w jednym zleceniu: `zips: [{name, b64, source?}]`. Stare pola
+        # (`zipB64`/`zipName`/`zipPath`) nadal działają — to ta sama ścieżka z jedną paczką.
+        zips = list(req.get("zips") or [])
+        if not zips and (req.get("zipB64") or req.get("zipPath")):
+            zips = [{"name": req.get("zipName"), "b64": req.get("zipB64"),
+                     "path": req.get("zipPath"), "source": None}]
+        packs = []
+        for i, z in enumerate(zips):
+            path = z.get("path")
+            if z.get("b64"):
+                safe = os.path.basename(z.get("name") or f"up{i}.zip")
+                path = os.path.join(tempfile.gettempdir(), f"cmw{i}_{safe}")
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(z["b64"].split(",")[-1]))
+            if path:
+                packs.append({"path": path, "name": z.get("name") or os.path.basename(path),
+                              "source": z.get("source") or None})
         links = req.get("links") or ([req["link"]] if req.get("link") else [])
-        if not links or not zip_path or not req.get("source"):
-            return {"error": "wymagane: link(i), zip, source"}
-        return build_proposal(links[0], zip_path, req["source"], req.get("message", ""),
+        if not links or not packs or not req.get("source"):
+            return {"error": "wymagane: link(i), co najmniej jedna paczka .zip, source"}
+        return build_proposal(links[0], packs, req["source"], req.get("message", ""),
                               campaign_id=req.get("campaignId"),
                               new_campaign=req.get("newCampaign"),
                               links=links, folder_map=req.get("folderMap"),

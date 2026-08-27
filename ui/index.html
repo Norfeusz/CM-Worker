@@ -783,7 +783,21 @@
       const linkAudiences = {};
       rowIdx.forEach((src, pos) => { const a = audOfRow(src); if (a) linkAudiences[pos] = a; });
       const [message, setMessage] = useState('');
-      const [file, setFile] = useState(null);
+      // KILKA PACZEK w jednym zleceniu: dostawcy coraz częściej dzielą materiały na
+      // osobny zip per źródło. Każdy plik może mieć wskazane źródło; puste = backend
+      // odczyta je z nazwy pliku (`household_gdn.zip` -> GDN), a jak nic z niej nie
+      // wynika, przypisze źródło główne.
+      const [files, setFiles] = useState([]);          // [{file, src}]
+      const addFiles = fl => {
+        // FileList jest ŻYWA i zeruje się razem z `input.value`, a updater Reacta wykonuje
+        // się później — bez skopiowania tablicy tutaj lista plików przychodziła pusta
+        const picked = [...fl];
+        setFiles(xs => [...xs, ...picked
+          .filter(f => !xs.some(x => x.file.name === f.name && x.file.size === f.size))
+          .map(f => ({ file: f, src: '' }))]);
+      };
+      const delFile = i => setFiles(xs => xs.filter((_, j) => j !== i));
+      const setFileSrc = (i, src) => setFiles(xs => xs.map((x, j) => j === i ? { ...x, src } : x));
       const [busy, setBusy] = useState(false);
       const [note, setNote] = useState('');
       const [showSites, setShowSites] = useState(false);
@@ -828,24 +842,28 @@
       const runAnalyze = async (extra) => {
         // Nazwij BRAKUJĄCY element wprost — "podaj link i wybierz plik" nie mówi, którego
         // z dwóch brakuje, a szary hint obok przycisku łatwo przeoczyć.
-        if (!links.length && !file) return fail('Nie podałeś adresu LP ani nie wybrałeś pliku .zip');
+        if (!links.length && !files.length) return fail('Nie podałeś adresu LP ani nie wybrałeś pliku .zip');
         if (!links.length) return fail('Nie podałeś adresu LP');
-        if (!file) return fail('Nie wybrałeś pliku .zip');
+        if (!files.length) return fail('Nie wybrałeś pliku .zip');
         setBusy(true); setNote(''); setNoteErr(false); setSuggestData(null);
         // report upwards: a rebuild triggered from the campaign card or from the folder
         // answers must light up the same indicator as clicking "Analizuj" here
         if (onBusy) onBusy(extra ? 'Przebudowuję propozycję' : 'Buduję propozycję',
                            'parsuję zip, czytam kampanię i strony docelowe z CM360');
         try {
-          const b64 = await new Promise((res, rej) => {
-            const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
-            r.readAsDataURL(file);
-          });
+          // kilka paczek w jednym zleceniu: każda ze swoim (opcjonalnym) źródłem
+          const zips = [];
+          for (const f of files) {
+            const b64 = await new Promise((res, rej) => {
+              const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej;
+              r.readAsDataURL(f.file);
+            });
+            zips.push({ name: f.file.name, b64, source: f.src || null });
+          }
           const resp = await fetch('/api/build-proposal', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ links, keywords, source, sources, linkSources,
-                                   linkAudiences, message, zipB64: b64, zipName: file.name,
-                                   ...(extra || {}) }),
+                                   linkAudiences, message, zips, ...(extra || {}) }),
           });
           const data = await resp.json();
           if (data.error) fail(data.error);
@@ -861,7 +879,8 @@
       // expose the analysis to the campaign card above, so swapping the campaign can
       // rebuild the structure with the SAME link/zip/source/message (no re-entry)
       useEffect(() => { if (rebuildRef) rebuildRef.current = runAnalyze; });
-      useEffect(() => { if (onCanRebuild) onCanRebuild(!!(links.length && file)); }, [links.length, !!file]);
+      useEffect(() => { if (onCanRebuild) onCanRebuild(!!(links.length && files.length)); },
+                [links.length, files.length]);
       return (
         <div className="card">
           <div className="lines-title">📝 Nowe zlecenie</div>
@@ -1017,8 +1036,31 @@
                 </div>
               )}
             </div>
-            <label>Materiały (.zip)
-              <input type="file" accept=".zip" onChange={e => setFile(e.target.files[0])} /></label>
+            <div>
+              <div className="lp-lbl">Materiały (.zip) <span className="hint">— można wskazać
+                kilka paczek naraz; każdą przypiszemy do jej źródła</span></div>
+              <input type="file" accept=".zip" multiple
+                onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
+              {files.map((f, i) => (
+                <div className="lp-row" key={f.file.name + i} style={{ marginTop: 6 }}>
+                  <span className="lp-no">📦</span>
+                  <span className="hint" style={{ overflow: 'hidden', textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap' }}>{f.file.name} <span style={{ opacity: .7 }}>
+                      ({Math.round(f.file.size / 1024)} kB)</span></span>
+                  <select className="lp-src" value={f.src}
+                    onChange={e => setFileSrc(i, e.target.value)}>
+                    <option value="">źródło z nazwy pliku</option>
+                    {sources.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <button className="btn mini" title="Usuń tę paczkę"
+                    onClick={() => delFile(i)}>✕</button>
+                </div>
+              ))}
+              {files.length > 1 && <div className="hint" style={{ marginTop: 4 }}>
+                {files.length} paczki — materiały każdej trafią do placementów jej źródła.
+                Podział folderami WEWNĄTRZ paczki ma pierwszeństwo nad przypisaniem pliku.
+              </div>}
+            </div>
             <label>Wiadomość zlecenia (opcjonalnie)
               <textarea rows="3" value={message} onChange={e => setMessage(e.target.value)}
                 placeholder="np. prośba o kody GDN dla formatów z załącznika..." /></label>
@@ -1615,7 +1657,17 @@
                 <span><EditableText value={p.campaign.name} onChange={v => { const np = clone(); np.campaign.name = v; commit(np); }} /> <Badge s={p.campaign.status} /> <span className="hint">id={p.campaign.id || '— (nowa)'}</span>
                   {canRebuild && <button className="btn link mini" style={{ marginLeft: 8 }}
                     onClick={() => setChangeCamp(s => !s)}>
-                    {changeCamp ? '▾ ukryj' : '🔄 zmień kampanię'}</button>}</span>
+                    {changeCamp ? '▾ ukryj' : '🔄 zmień kampanię'}</button>}
+                  {/* DLACZEGO ta kampania i po którym adresie — bez tego dopasowanie jest
+                      magią, a przy kilku adresach nie wiadomo, który zadecydował */}
+                  {p.campaign.matchedBy && p.campaign.matchedBy.why &&
+                    <div className="hint" style={{ marginTop: 2 }}>
+                      dopasowano: {p.campaign.matchedBy.why}
+                      {p.campaign.matchedBy.lpName &&
+                        <span> · po LP <b>{p.campaign.matchedBy.lpName}</b></span>}
+                      {p.campaign.matchedBy.link && (p.lines || []).length > 1 &&
+                        <span> · z adresu <span className="url">{p.campaign.matchedBy.link}</span></span>}
+                    </div>}</span>
                 <span className="k">{siteGroups.length > 1 ? 'Źródła → Site' : 'Źródło → Site'}</span>
                 <span>{siteGroups.map((st, i) => (
                   <span key={st.name}>{i ? ' · ' : ''}
