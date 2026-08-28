@@ -52,13 +52,64 @@ def lp_source(source, source_map=None):
     return (source_map.get(source) or {}).get("lpSource") or source
 
 
-def _ad_name(unit, ad_key):
+def _ad_name(unit, ad_key, drop_variant=False):
+    """Nazwa ada z jednostki paczki. `drop_variant` wycina folder z nazwy — patrz
+    `drop_variant_in()`, które rozstrzyga, kiedy jest on w niej zbędny.
+
+    `file_tag` (ogon nazwy pliku od wymiaru: `1080x1080-a`, `1200x1200_karuzela-4`) bije
+    sam wymiar, bo to on rozróżnia warianty jednego wymiaru. Niesie już i wymiar, i kartę,
+    więc zastępuje OBA — inaczej karuzela wychodziła jako `1200x1200_karuzela-4_4`.
+    Sprawdzone na 28 nazwach adów z gotowego arkusza klienta (Promocja NNW).
+    """
+    tag = unit.get("file_tag")
     if ad_key == "variant":
-        return unit.get("variant") or unit.get("dimension") or "?"
+        # DemGen ignoruje wymiar: w gotowych tagach klienta cały zestaw `kv1-demgen/`
+        # (cztery wymiary) to JEDEN ad `kv1`. Zestaw jest tu wariantem, gdy folder
+        # wariantu nie występuje — stąd on drugi w kolejce, przed wymiarem.
+        return (unit.get("variant") or unit.get("set_index") or tag
+                or unit.get("dimension") or "?")
     if ad_key == "variant_dim_card":
-        parts = [unit.get("variant"), unit.get("dimension"), unit.get("card_index")]
+        variant = None if drop_variant else unit.get("variant")
+        parts = ([variant, tag] if tag
+                 else [variant, unit.get("dimension"), unit.get("card_index")])
         return "_".join(str(p) for p in parts if p) or "?"
-    return unit.get("dimension") or "?"          # default: dimension
+    return tag or unit.get("dimension") or "?"   # default: dimension
+
+
+def _carries_set(name, set_index):
+    """Czy nazwa ada już niesie oznaczenie zestawu (`1080x1080-kv1`).
+
+    Dostawca bywa niekonsekwentny: pliki wideo Mety mają `kv1` w nazwie, statyki nie.
+    W gotowych tagach klienta ad z takiego pliku nazywa się `1080x1080-kv1`, a nie
+    `1080x1080-kv1_kv1` — sufiks dokładamy więc tylko tam, gdzie go brakuje.
+
+    Zestaw zapisany SAMĄ cyfrą (`linia2/` -> `2`) nigdy się tu nie liczy: jako podciąg
+    trafiał w cyfry wymiaru (`1` w `160x600`, `2` w `300x250`) i po cichu zjadał sufiks,
+    przez co dwa komplety zlewały się w jeden ad. Etykieta musi nieść literę (`KV1`)
+    i stać na granicy tokenu.
+    """
+    s = str(set_index or "")
+    if not re.search(r"[a-z]", s, re.I):
+        return False
+    return bool(re.search(rf"(?<![0-9a-z]){re.escape(s)}(?![0-9])", name or "", re.I))
+
+
+def drop_variant_in(bucket, conf):
+    """Czy folder materiałów można pominąć w nazwach adów tego placementu.
+
+    Folder będący FORMATEM źródła nazywa już placement (`statyki/` -> `Statyki`), więc
+    powtórzony w nazwie ada tylko ją dubluje (`statyki_1080x1920_1`) — zgłoszone przez
+    użytkownika. Warunek „wszystkie jednostki z jednego folderu" jest konieczny: w mapie
+    Mety `video` i `animacje` wskazują TEN SAM placement `Animacje`, a tam wariant jest
+    jedynym rozróżnikiem adów i bez niego oba komplety zlałyby się w jeden.
+
+    Drugi warunek — każda jednostka musi mieć WYMIAR — bo to on przejmuje rolę nazwy.
+    Karty karuzeli wymiaru nie mają (`karuzela_1`, `karuzela_2`), więc bez wariantu
+    zostałoby z nich samo `1` i `2`.
+    """
+    variants = {u.get("variant") for u in bucket}
+    return (len(variants) == 1 and bool(placement_for(conf, next(iter(variants))))
+            and all(u.get("dimension") for u in bucket))
 
 
 def _status(name, container):
@@ -245,6 +296,73 @@ def file_format(unit, conf, folder=None):
     return aliases.get(found, found)
 
 
+# Wymiar wypisany w TREŚCI zlecenia (`kody pod formaty 970x200, 970x300, …`).
+DIM_IN_TEXT = re.compile(r"\b(\d{2,4})\s*[x×]\s*(\d{2,4})\b", re.I)
+# Oznaczenie zestawu w treści zlecenia (`materiały z _kv2 analogicznie do pozostałych`).
+SET_IN_TEXT = re.compile(r"(?<![0-9a-z])_?(kv\s*\d+)(?![0-9])", re.I)
+
+
+def set_from_message(message):
+    """Etykieta zestawu podana w TREŚCI zlecenia, gdy paczka jej nie niesie.
+
+    Realny przypadek: KV1 i KV3 przyszły w paczkach z `kv1`/`kv3` w nazwie, a KV2
+    („linia 2 chłopiec") bez żadnego oznaczenia — zestaw wynikał tylko z kontekstu.
+    Ustalenie usera: w takiej sytuacji zestaw dopisuje się w komentarzu zlecenia
+    („materiały z _kv2 analogicznie do pozostałych"), więc narzędzie ma go stamtąd wziąć.
+
+    Zwracamy tylko wtedy, gdy wiadomość wymienia DOKŁADNIE JEDEN zestaw: przy kilku nie
+    ma jak rozstrzygnąć, któremu materiałowi który przypisać, a zgadywanie zlałoby
+    komplety w jeden ad — czyli dokładnie ta strata, której to ma zapobiec.
+    """
+    found = {re.sub(r"\s+", "", m).lower() for m in SET_IN_TEXT.findall(message or "")}
+    return found.pop() if len(found) == 1 else None
+
+
+def _source_tokens(source, conf):
+    """Słowa, po których poznajemy, że zlecenie mówi o TYM źródle."""
+    site = re.sub(r"^cg[_\- ]", "", str(conf.get("site") or "").lower())
+    return {t for t in {str(source).lower(), str(conf.get("lpSource") or "").lower(),
+                        site, site.split(".")[0]} if t}
+
+
+def formats_from_message(message, sources, source_map=None, main=None):
+    """`{źródło: [formaty]}` — formaty wypisane WPROST w treści zlecenia.
+
+    Zlecenie bywa jedynym źródłem prawdy o tym, co kodować: „LP wp.pl (tu będą potrzebne
+    kody pod formaty 970x200, 970x300, … i native ad)" — WP nie dostaje żadnej paczki,
+    a i tak ma mieć swoje ady. Życzenie usera: wymiary podane w opisie mają tworzyć ady.
+
+    Wiadomość dzielimy na fragmenty (linie i średniki), bo nazwa źródła stoi zwykle w tym
+    samym fragmencie co jego lista wymiarów. Fragment bez rozpoznanego źródła liczy się
+    tylko wtedy, gdy zlecenie ma dokładnie JEDNO źródło — inaczej nie ma jak zgadnąć,
+    komu te wymiary przypisać, a zgadywanie dokłada ady po cichu.
+
+    Nazwane formaty bez wymiaru (`native ad` -> `NativeAd`) biorą się z `messageFormats`
+    w configu źródła, bo to konwencja konkretnego wydawcy, nie reguła ogólna.
+    """
+    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    sources = list(sources or [])
+    out = {}
+    for chunk in re.split(r"[\n;]+", message or ""):
+        dims = [f"{a}x{b}" for a, b in DIM_IN_TEXT.findall(chunk)]
+        words = set(re.findall(r"[a-zżźćńółęąś0-9]+", chunk.lower()))
+        named = {}
+        for s in sources:
+            conf = source_map.get(s) or {}
+            for pat, name in (conf.get("messageFormats") or {}).items():
+                if re.search(re.escape(pat), chunk, re.I):
+                    named.setdefault(s, []).append(name)
+        hit = [s for s in sources if words & _source_tokens(s, source_map.get(s) or {})]
+        if not hit and len(sources) == 1:
+            hit = list(sources)
+        for s in hit:
+            found = dims + [n for n in named.get(s, []) if n not in dims]
+            for f in found:
+                if f not in out.setdefault(s, []):
+                    out[s].append(f)
+    return out
+
+
 def placement_for(conf, name):
     """The placement a top-level folder maps to for this source, or None when the folder
     names no format this source knows (`placementByFormat`, case-insensitive).
@@ -259,6 +377,19 @@ def placement_for(conf, name):
         return None
     pbf = {str(k).lower(): v for k, v in (conf.get("placementByFormat") or {}).items()}
     return pbf.get(str(name).lower())
+
+
+def placement_by_type(conf, unit):
+    """Placement wybrany TYPEM assetu, gdy nazwa folderu nic o formacie nie mówi.
+
+    Paczka Mety trzyma `1080x1080-a.png` obok `1080x1080-kv1.mp4` w JEDNYM folderze
+    zestawu (`kv1-meta`), a w gotowych tagach klienta wideo stoi na placemencie `Video`,
+    statyki na `Display`. Z nazwy folderu nie da się tego odczytać, z rozszerzenia tak.
+    Świadomie tylko jako fallback po `placement_for()`: gdy paczka SAMA rozdziela formaty
+    folderami, decyduje folder — inaczej `statyki/` z jednym gifem wpadłoby do `Animacje`.
+    """
+    pbt = {str(k).lower(): v for k, v in (conf.get("placementByType") or {}).items()}
+    return pbt.get(str(unit.get("type") or "").lower())
 
 
 def format_mode(conf):
@@ -296,7 +427,8 @@ def group_source(group, selected):
     return next((s for s in selected if s.lower() in (hint, name)), None)
 
 
-def mailing_lines(parsed, conf, campaign, start_no=1, override=None, main_url=None):
+def mailing_lines(parsed, conf, campaign, start_no=1, override=None, main_url=None,
+                  today=None):
     """Strony docelowe i kreacje wysyłek z paczki — wejście dla `build_proposal(lines=…)`.
 
     Jedna wysyłka = jeden plik HTML = jeden ad; każdy unikalny link http w tym HTML-u =
@@ -313,7 +445,9 @@ def mailing_lines(parsed, conf, campaign, start_no=1, override=None, main_url=No
     mconf = conf.get("mailing") or {}
     utm_tpl = mconf.get("utm") or ""
     cta_label = mconf.get("ctaLabel") or "CTA"
-    camp_slug = matcher.normalize(campaign.get("name") or "") or "kampania"
+    # `utm_campaign` NIE jest samą nazwą kampanii: w arkuszu klienta „Household
+    # 08-12.2026" dało `household_sierpien` — nazwa ucięta przed datą + miesiąc wysyłki
+    camp_slug = matcher.utm_campaign_slug(campaign.get("name"), today)
     utm = utm_tpl.format(campaign=camp_slug) if utm_tpl else ""
     out = []
     for m_i, mail in enumerate(parsed.get("mailings") or []):
@@ -332,9 +466,14 @@ def mailing_lines(parsed, conf, campaign, start_no=1, override=None, main_url=No
             lab = (row.get("label") or label).strip() or label
             url = (row.get("url") if row.get("url") is not None
                    else _with_utm(src_url, utm))
+            # LP wiersza CTA nie nosi sufiksu — w arkuszu klienta to samo `mail1`.
+            # Kreacja i ad sufiks ZACHOWUJĄ (`mail-1-CTA`), bo tak jest na koncie;
+            # różnicę potwierdził użytkownik. Reguła idzie za etykietą, więc user, który
+            # przemianuje `CTA` na coś innego, świadomie z niej wychodzi.
+            lp_lab = None if lab.lower() == cta_label.lower() else lab
             out.append({
                 "lineNumber": no, "mail": no, "label": lab,
-                "lpName": matcher.mail_lp_name(no, lab),
+                "lpName": matcher.mail_lp_name(no, lp_lab),
                 "creativeName": matcher.mail_creative_name(no, lab),
                 "adName": matcher.mail_ad_name(no),
                 "source": None, "path": None, "reused": False, "url": url,
@@ -411,6 +550,53 @@ def serving_line_labels(links, keywords, source, row_audiences=None, row_sources
     return labels, next((k for k in (keywords or {}).values() if k), None)
 
 
+def message_placements(formats, source, conf, line_nodes, existing, multi, lp_token):
+    """Placement + ady dla źródła, którego formaty podano w TREŚCI zlecenia.
+
+    Źródło bez paczki (WP: „kody pod 970x200, … i native ad") nie przechodzi przez
+    maszynerię jednostek, bo nie ma materiałów — ale ma mieć swoje ady, po jednym na
+    format. Kreacja jest ta sama co wszędzie: linia zlecenia.
+
+    Kształt węzła jest identyczny jak przy placemencie z paczki, więc scalanie po
+    (Site, nazwa) i eksport tagów działają bez wyjątków dla tego przypadku.
+    """
+    if not formats:
+        return []
+    site = conf.get("site")
+    plc_name = (conf.get("placementByFormat") or {}).get("Display") or "Display"
+    ex_plc = ((existing or {}).get(site, {})).get(plc_name)
+    lines = [ln for ln in line_nodes
+             if not lp_token or not ln.get("source")
+             or ln["source"].lower() == lp_token.lower()] or line_nodes[:1]
+    ads = []
+    for fmt in formats:
+        ex_cre = set((ex_plc or {}).get(fmt) or [])
+        creatives = []
+        for ln in lines:
+            cr = {"name": ln["creativeName"], "type": None, "packaged": False,
+                  "source_path": None, "status": _status(ln["creativeName"], ex_cre),
+                  "fromMessage": True}
+            if multi:
+                cr["lpName"], cr["lpUrl"] = ln["lpName"], ln.get("url") or ""
+            creatives.append(cr)
+        ads.append({"name": fmt, "dimension": fmt if "x" in fmt else None,
+                    "status": _status(fmt, ex_plc), "creatives": creatives})
+    return [{"name": plc_name, "group": None, "source": source, "site": site,
+             "compatibility": "DISPLAY", "size": "1x1", "fromMessage": True,
+             "status": _status(plc_name, (existing or {}).get(site)),
+             "ads": sorted(ads, key=lambda a: a["name"])}]
+
+
+def _camp_token(name):
+    """Nazwa kampanii tak, jak stoi w nazwie placementu serwującego.
+
+    `Promocja NNW 08-09.2026` -> `promocja_nnw_08-09.2026`: małe litery i spacje na
+    podkreślenia, ale NIC więcej. Świadomie nie `matcher.normalize()` — ten zwinąłby
+    `08-09.2026` do `08_09_2026`, a w gotowych tagach klienta myślnik i kropka zostają.
+    """
+    return re.sub(r"\s+", "_", (name or "").strip()).lower()
+
+
 def serving_placements(units, conf, campaign, line_nodes, line_label, existing,
                        today=None):
     """Drzewo dla źródła, w którym CM360 SERWUJE kreacje (programmatic).
@@ -446,10 +632,14 @@ def serving_placements(units, conf, campaign, line_nodes, line_label, existing,
         dims = sorted(by_set[sset])
         # zestaw dokładamy do nazwy TYLKO gdy jest ich kilka — sufiks istnieje po to,
         # żeby dwa komplety się nie zlały, a przy jednym dublowałby nazwę linii
-        label = f"{line_label}-{sset}" if (sset and len(by_set) > 1) else line_label
+        # ZESTAW jest tu nazwą linii, gdy istnieje: w gotowych tagach klienta placement
+        # nazywa się `promocja_nnw_08-09.2026_kv3_11.08.2026-prospecting` — sam `kv3`,
+        # bez słowa klucza. Słowo klucza wchodzi dopiero tam, gdzie zestawów nie ma
+        # (paczka Household: `household_08-12.2026_linia1_17.08.2026-…`).
+        label = str(sset) if sset else line_label
         for aud in audiences:
             ln = lp_by_aud.get(aud.lower()) or (line_nodes[0] if line_nodes else None)
-            name = pattern.format(campaign=campaign.get("name") or "", line=label,
+            name = pattern.format(campaign=_camp_token(campaign.get("name")), line=label,
                                   date=date_s, audience=aud)
             ex_plc = ((existing or {}).get(site, {})).get(name)
             creatives = [{"name": d, "type": by_set[sset][d].get("type"),
@@ -477,7 +667,7 @@ def serving_placements(units, conf, campaign, line_nodes, line_label, existing,
 def build_proposal(source, parsed, campaign, line=None, existing=None, source_map=None,
                    campaign_lps=None, target_url=None, line_conflict=None,
                    lines=None, folder_match=None, sources=None, line_addresses=None,
-                   line_label=None, today=None):
+                   line_label=None, today=None, message=""):
     """
     source       : "GDN"/"Facebook"/... — the PRIMARY source of the order
     sources      : every source of this order (primary first). A package that separates
@@ -526,6 +716,9 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     # materials serve, it does not stop Screening from being its own format placement.
     consumed = set(fmatch["consumed"]) if "consumed" in fmatch else set(folder_map)
     warnings = list(parsed.get("warnings", []))
+    # {nazwa ada: {ścieżki materiałów}} — materiały, które zlały się w jeden ad; patrz
+    # miejsce, w którym się to wykrywa (pętla budująca ady)
+    collisions = {}
 
     # Which line(s) does each unit feed? A unit from a folder mapped to a landing page
     # feeds only that one; anything unmapped feeds all of them.
@@ -535,9 +728,14 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     lines_of_addr = {}
     for j, a in enumerate(addr_of):
         lines_of_addr.setdefault(a, []).append(j)
+    # Zestaw z komentarza uzupełnia TYLKO jednostki, które własnego nie mają — paczka
+    # z `kv1` w nazwie zachowuje swój, nawet gdy w zleceniu pada inny.
+    msg_set = set_from_message(message)
     units_all = []
     for u in parsed["units"]:
         v = dict(u)
+        if msg_set and not v.get("set_index"):
+            v["set_index"] = msg_set
         idx = folder_map.get(_unit_folder(u))
         v["_lines"] = lines_of_addr.get(idx, all_idx) if idx is not None else all_idx
         # remember the folder BEFORE it is cleared below: one folder name carries both
@@ -630,6 +828,11 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                 prev["size"] = prev["sizes"][0] if prev["sizes"] else prev["size"]
             continue
         ad_key = source_map.get(g_source, conf).get("adKey", "dimension")
+        # Typ assetu rozstrzyga placement TYLKO gdy ta porcja materiałów miesza formaty
+        # (Meta: `1080x1080-kv1.mp4` obok `1080x1080-a.png` w jednym folderze zestawu ->
+        # `Video` i `Display`). Przy paczce jednorodnej zostaje `format_hint`, żeby
+        # nieznany folder resztek dalej brał nazwę z niego, a nie robił własny placement.
+        mixed_types = len({t for t in (placement_by_type(conf, u) for u in units) if t}) > 1
         # file-format handling is per source too (mode + aliases + placement names)
         mode = format_mode(conf)
         fmt_placements = {str(k).lower(): v for k, v in
@@ -653,8 +856,9 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                 # An LP folder is skipped: it says which page the materials serve, not
                 # which format they are.
                 fld = u.get("_folder")
-                key = (placement_for(conf, fld) if fld not in consumed else None
-                       ) or placement_name
+                key = ((placement_for(conf, fld) if fld not in consumed else None)
+                       or (placement_by_type(conf, u) if mixed_types else None)
+                       or placement_name)
             else:
                 key = placement_name
             buckets.setdefault(key, []).append(u)
@@ -667,19 +871,41 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
             # remarketing/300x250 are one 300x250 ad with two creatives), so collect
             # the lines it serves and remember which unit fed each of them
             ads = {}
-            # zestaw dokładamy do nazwy ada TYLKO gdy w tym placemencie jest ich kilka:
-            # sufiks istnieje po to, żeby dwa komplety tych samych wymiarów się nie zlały
-            # (`300x250_1` + `300x250_2`), a przy jednym powtarzałby to, co mówi już LP
-            many_sets = len({u.get("set_index") for u in bucket}) > 1
+            # Zestaw NAZWANY (`kv1`) trafia do nazwy ada zawsze: to nazwa własna key
+            # visuala, a inne jego odsłony bywają trafficowane osobno i później — paczka
+            # samego KV2 musi dać `750x100_kv2`, żeby nie zderzyć się z `750x100_kv1`
+            # z poprzedniego rzutu. Zestaw będący samą CYFRĄ (`linia2/` -> `2`) to tylko
+            # numeracja porządkowa wewnątrz paczki, więc tam sufiks ma sens dopiero, gdy
+            # kompletów jest kilka — inaczej powtarzałby to, co mówi już LP.
+            sets_here = {u.get("set_index") for u in bucket}
+            named_set = any(re.search(r"[a-z]", str(s or ""), re.I) for s in sets_here)
+            many_sets = len(sets_here) > 1 or named_set
+            no_variant = drop_variant_in(bucket, conf)
             for u in bucket:
-                base = _ad_name(u, ad_key)
-                if u.get("set_index") and many_sets:
+                base = _ad_name(u, ad_key, drop_variant=no_variant)
+                if u.get("set_index") and many_sets and not _carries_set(base, u["set_index"]):
                     base = f"{base}_{u['set_index']}"
                 # `adSuffix` mode: one placement, the format separates ads (160x600_gif)
                 name = (f"{base}_{u['_format']}"
                         if mode == "adSuffix" and u.get("_format") else base)
                 slot = ads.setdefault(name, {"unit": u, "by_line": {}})
                 for i in u["_lines"]:
+                    prev = slot["by_line"].get(i)
+                    # DWA różne materiały pod tą samą nazwą ada i tą samą linią: drugi
+                    # nie ma się gdzie podziać i dotąd znikał bez śladu. Tak wygląda
+                    # nierozpoznany ZESTAW — komplet tych samych wymiarów w folderze
+                    # nazwanym inaczej niż `linia{N}` / `KV{N}`. Parser sam tego nie
+                    # zgłosi (nie wie, które foldery pójdą na osobne LP), a tu widać
+                    # realną kolizję, nie domysł z nazwy.
+                    # Warunek „ten sam WYMIAR" jest konieczny: DemGen świadomie zwija
+                    # cały zestaw w jeden ad (`kv1`), więc różne wymiary pod jedną nazwą
+                    # są tam normą, nie utratą materiału. Realna kolizja to dwa RÓŻNE
+                    # pliki tego samego wymiaru walczące o tę samą nazwę.
+                    if (prev is not None
+                            and prev.get("dimension") == u.get("dimension")
+                            and prev.get("source_path") != u.get("source_path")):
+                        collisions.setdefault(name, {prev.get("source_path")})
+                        collisions[name].add(u.get("source_path"))
                     slot["by_line"].setdefault(i, u)
             ad_nodes = []
             for name, slot in ads.items():
@@ -730,6 +956,34 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                 cur["creatives"] += [c for c in a["creatives"]
                                      if (c["name"], c.get("lpName")) not in have]
             prev["ads"].sort(key=lambda a: a["name"])
+
+    # Źródła, których formaty stoją w TREŚCI zlecenia, a nie w paczce (WP: „kody pod
+    # 970x200, … i native ad"). Idą po materiałach, żeby dołożyć się do placementu tego
+    # źródła, jeśli taki już powstał z paczki, zamiast tworzyć drugi o tej samej nazwie.
+    for msg_src, fmts in formats_from_message(message, selected, source_map).items():
+        conf_m = source_map.get(msg_src) or {}
+        for pl in message_placements(fmts, msg_src, conf_m, line_nodes, existing, multi,
+                                     lp_source(msg_src, source_map)):
+            key = (pl["site"], pl["name"], None)
+            prev = plc_by_key.get(key)
+            if prev is None:
+                plc_by_key[key] = pl
+                placements.append(pl)
+                continue
+            have = {a["name"] for a in prev["ads"]}
+            prev["ads"] += [a for a in pl["ads"] if a["name"] not in have]
+            prev["ads"].sort(key=lambda a: a["name"])
+
+    # Materiały, które zlały się w jeden ad, zgłaszamy zamiast po cichu je gubić.
+    # Rozpoznane zestawy (`linia{N}`, `KV{N}`) tu nie trafiają — mają własny sufiks
+    # w nazwie ada, więc nie kolidują; zostaje dokładnie to, czego parser nie nazwał.
+    for ad_name, paths in sorted(collisions.items()):
+        skad = ", ".join(sorted(p for p in paths if p))
+        warnings.append(
+            f"ad „{ad_name}”: kilka materiałów trafia w to samo miejsce ({skad}) — "
+            f"zakodowany zostanie tylko pierwszy. Jeśli to dwa komplety tych samych "
+            f"wymiarów, nazwij ich foldery `linia1`/`linia2` albo `KV1_`/`KV2_`, "
+            f"żeby rozróżnić je na adach.")
 
     # every Site this order touches, primary first — the orchestrator writes each
     # placement on ITS OWN Site and `/api/commit` refuses when one is missing

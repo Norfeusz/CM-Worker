@@ -67,7 +67,7 @@ check("...z rozpoznanym źródłem tam, gdzie da się je rozpoznać",
       [g["source_hint"] for g in p["groups"]], ["GDN", None])
 gdn = {(u["set_index"], u["dimension"]) for u in p["units"] if u["group"] == "GDN"}
 check("GDN ma SWOJE wymiary w obu zestawach",
-      sorted(gdn), sorted([(s, d) for s in ("KV1", "KV3") for d in GDN_DIMS]))
+      sorted(gdn), sorted([(s, d) for s in ("kv1", "kv3") for d in GDN_DIMS]))
 check("...i żadnego wymiaru z paczki afiliacji",
       {d for s, d in gdn} & set(AFI_DIMS), set())
 check("folder KV to ZESTAW, nie wariant (nie może udawać folderu strony docelowej)",
@@ -298,12 +298,56 @@ check("wiele nie-indeksowych HTML-i = paczka banerów, nie wysyłki",
 
 print("\netykieta zestawu z nazwy folderu:")
 check("`linia2` -> 2", parse_zip._set_label("linia2"), "2")
-check("`KV1_NNW paczki` -> KV1 (po cyfrze stoi `_`, nie granica słowa)",
-      parse_zip._set_label("KV1_NNW paczki z reformatami"), "KV1")
-check("`KV 3 coś` -> KV3", parse_zip._set_label("KV 3 coś"), "KV3")
-check("`KV10_x` -> KV10 (nie KV1)", parse_zip._set_label("KV10_x"), "KV10")
+check("`KV1_NNW paczki` -> kv1 (po cyfrze stoi `_`, nie granica słowa)",
+      parse_zip._set_label("KV1_NNW paczki z reformatami"), "kv1")
+check("`KV 3 coś` -> kv3", parse_zip._set_label("KV 3 coś"), "kv3")
+check("`KV10_x` -> kv10 (nie kv1)", parse_zip._set_label("KV10_x"), "kv10")
 check("zwykły folder nie jest zestawem", parse_zip._set_label("Screening"), None)
 check("wymiar nie jest zestawem", parse_zip._set_label("300x250"), None)
+
+print("\nWARIANT Z NAZWY PLIKU (`file_tag`) — paczka Mety z realnego zlecenia NNW:")
+# Zgłoszone arkuszem klienta: z 14 plików na zestaw parser robił 4 jednostki, bo klucz
+# nie zawierał ogona nazwy pliku. 20 z 28 adów przepadało bez śladu.
+check("ogon od wymiaru w dół", parse_zip._file_tag("1080x1080-a.png", "1080x1080"),
+      "1080x1080-a")
+check("prefiks produktowy odpada",
+      parse_zip._file_tag("mBank-uniqa_META_nnw_1200x1200_karuzela-4.jpg", "1200x1200"),
+      "1200x1200_karuzela-4")
+check("sam wymiar to nie wariant", parse_zip._file_tag("1200x628.png", "1200x628"), None)
+check("wymiar z folderu, nie z nazwy pliku -> brak ogona",
+      parse_zip._file_tag("index.html", "300x250"), None)
+check("bez wymiaru nie ma czego liczyć", parse_zip._file_tag("cokolwiek.png", None), None)
+
+META = _outer({
+    "kv1-meta/1080x1080-a.png": b"x", "kv1-meta/1080x1080-b.png": b"x",
+    "kv1-meta/1080x1080-kv1.mp4": b"x", "kv1-meta/1200x628.png": b"x",
+    "kv3-meta/1080x1080-a.png": b"x", "kv3-meta/1080x1080-kv3.mp4": b"x",
+})
+rmeta = parse_zip.parse(META)
+check("każdy wariant pliku to OSOBNA jednostka", len(rmeta["units"]), 6)
+check("...z ogonem nazwy i typem",
+      sorted((u["set_index"], u["file_tag"] or "", u["type"]) for u in rmeta["units"]),
+      [("kv1", "", "image"), ("kv1", "1080x1080-a", "image"),
+       ("kv1", "1080x1080-b", "image"), ("kv1", "1080x1080-kv1", "video"),
+       ("kv3", "1080x1080-a", "image"), ("kv3", "1080x1080-kv3", "video")])
+
+# karty karuzeli w PŁASKIEJ paczce zagnieżdżonej: wymiar jest w nazwie pliku razem
+# z numerem karty, więc bez ogona cztery karty zwijały się w jedną jednostkę
+_kar = io.BytesIO()
+with zipfile.ZipFile(_kar, "w") as z:
+    for d in ("1200x1200", "1080x1920"):
+        for c in (1, 2, 3, 4):
+            z.writestr(f"KARUZELA jpg/mBank-uniqa_META_nnw_{d}_karuzela-{c}.jpg", b"x")
+rkar = parse_zip.parse(_outer({"KARUZELA jpg (2).zip": _kar.getvalue()}))
+check("każda karta karuzeli to osobna jednostka", len(rkar["units"]), 8)
+check("...nazwana wymiarem z numerem karty",
+      sorted(u["file_tag"] for u in rkar["units"])[:3],
+      ["1080x1920_karuzela-1", "1080x1920_karuzela-2", "1080x1920_karuzela-3"])
+# a paczka z FOLDERAMI wymiarów nadal daje jedną jednostkę na wymiar — pliki jednego
+# banera (index.html + images/) muszą zostać razem
+check("paczka z folderami wymiarów nadal zwija baner w jedną jednostkę",
+      len(parse_zip.parse(_outer({"p/x_gdn.zip": _inner(GDN_DIMS)}))["units"]),
+      len(GDN_DIMS))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

@@ -245,7 +245,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                                 lines=M.resolve_lines(ent_urls, anchor, lp_src, [],
                                                       ent_labels, ent_kw, ent_src),
                                 existing={s: {} for s in state["sites_by_name"]},
-                                campaign_lps=[], target_url=link,
+                                campaign_lps=[], target_url=link, message=message,
                                 folder_match=folder_match, sources=selected,
                                 line_addresses=addr_of, line_label=line_label)
         return _attach_ai(prop, parsed, message, rules)
@@ -291,7 +291,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                                   start_no=M.next_mail_number(this),
                                   override=mail_links, main_url=link),
             existing=existing_tree(fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)),
-            campaign_lps=this, target_url=link, sources=selected)
+            campaign_lps=this, target_url=link, sources=selected, message=message)
         return _attach_ai(prop, parsed, message, rules)
     lines = M.resolve_lines(ent_urls, anchor, lp_src, this, ent_labels, ent_kw, ent_src)
     # the reuse-vs-new-line question is per landing page AND per source (the source is
@@ -307,7 +307,8 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                             lines=lines, existing=existing_tree(state), campaign_lps=this,
                             target_url=link, line_conflict=conflict,
                             folder_match=folder_match, sources=selected,
-                            line_addresses=addr_of, line_label=line_label)
+                            line_addresses=addr_of, line_label=line_label,
+                            message=message)
     return _attach_ai(prop, parsed, message, rules)
 
 

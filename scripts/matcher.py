@@ -10,6 +10,7 @@ Rules (confirmed with user):
  * line number = tied to the destination PATH within a campaign; source suffix
                  (GDN/FB/...) comes from the UI. Same path => same line number.
 """
+import datetime
 import difflib
 import re
 from urllib.parse import parse_qs, urlparse
@@ -96,6 +97,19 @@ def _common_leading(a, b):
 # dopasowania był zdecydowanie zbyt luźny (zgłoszone przez usera).
 SEGMENT_MATCH_RATIO = 0.7
 
+# Ile wspólnych członów musi być, żeby kampania dopasowała się AUTOMATYCZNIE. Jeden
+# wspólny człon przy dłuższej ścieżce to za mało: `standard/google/1000` i
+# `standard/biedronka/other` dzielą tylko `standard`, a to dwie różne kampanie
+# (zgłoszone przez usera — dopasowanie bywało za luźne). Przy ścieżce KRÓTSZEJ próg
+# schodzi do jej długości, inaczej `szkola-8` ↔ `szkola-2` (jeden człon po anchorze)
+# nie dopasowałoby się nigdy.
+MIN_SEGMENTS = 2
+
+
+def _needed(target, rem, minimum=None):
+    """Ile członów musi się zgodzić dla TEJ pary ścieżek."""
+    return min(MIN_SEGMENTS if minimum is None else minimum, len(target), len(rem))
+
 
 def _seg_ratio(a, b):
     """Podobieństwo dwóch członów ścieżki, 0..1 (`szkola-8` vs `szkola-2` -> 0.88)."""
@@ -112,7 +126,8 @@ def _common_near(a, b, ratio=SEGMENT_MATCH_RATIO):
     return c
 
 
-def match_campaigns(url, anchor, campaign_lps, ratio=SEGMENT_MATCH_RATIO):
+def match_campaigns(url, anchor, campaign_lps, ratio=SEGMENT_MATCH_RATIO,
+                    min_segments=MIN_SEGMENTS):
     """campaign_lps: list of {campaignId, campaignName, lpName, lpUrl}.
     Returns (ranked_candidates, suggest_new_campaign:bool).
 
@@ -121,6 +136,11 @@ def match_campaigns(url, anchor, campaign_lps, ratio=SEGMENT_MATCH_RATIO):
     granicach progu podobieństwa (`szkola-8` ↔ `szkola-2`). Dokładne dopasowanie zawsze
     wygrywa w rankingu; podobieństwo tylko ratuje przypadki, w których jedyny człon
     ścieżki różni się odsłoną.
+
+    Wspólnych członów musi być co najmniej `min_segments` (albo tyle, ile ma krótsza
+    ścieżka) — patrz MIN_SEGMENTS. Kandydat, który tego nie spełnia, ZOSTAJE w rankingu
+    (UI pokazuje listę do ręcznego wyboru), ale nie jest wybierany automatycznie:
+    `enough=False` i `suggest_new=True`.
 
     `why` mówi, co zadecydowało — trafia do UI, żeby dopasowanie nie było magią i żeby
     było widać, po którym LP kampania się dopasowała.
@@ -131,6 +151,8 @@ def match_campaigns(url, anchor, campaign_lps, ratio=SEGMENT_MATCH_RATIO):
         rem = remaining_path(row["lpUrl"], anchor) or []
         common = _common_leading(target, rem)
         near = _common_near(target, rem, ratio)
+        need = _needed(target, rem, min_segments)
+        enough = bool(need) and max(common, near) >= need
         if common:
             why = f"ta sama ścieżka ({'/'.join(rem[:common])})"
         elif near:
@@ -139,16 +161,20 @@ def match_campaigns(url, anchor, campaign_lps, ratio=SEGMENT_MATCH_RATIO):
             why = f"podobny człon ścieżki: {pairs}"
         else:
             why = "brak wspólnej ścieżki"
+        if not enough and (common or near):
+            why += (f" — za mało, żeby wybrać automatycznie "
+                    f"({max(common, near)} z {need} członów)")
         cand = {"campaignId": row["campaignId"], "campaignName": row["campaignName"],
-                "common": common, "near": near, "why": why,
-                "lpName": row.get("lpName"), "lpUrl": row["lpUrl"],
+                "common": common, "near": near, "enough": enough, "needed": need,
+                "why": why, "lpName": row.get("lpName"), "lpUrl": row["lpUrl"],
                 "lpRemaining": "/".join(rem)}
         cur = by_camp.get(row["campaignId"])
         if not cur or (common, near) > (cur["common"], cur["near"]):
             by_camp[row["campaignId"]] = cand
-    ranked = sorted(by_camp.values(), key=lambda c: (c["common"], c["near"]), reverse=True)
+    ranked = sorted(by_camp.values(),
+                    key=lambda c: (c["enough"], c["common"], c["near"]), reverse=True)
     best = ranked[0] if ranked else None
-    suggest_new = not best or best["near"] == 0
+    suggest_new = not best or not best["enough"]
     return ranked, suggest_new
 
 
@@ -209,6 +235,31 @@ def mail_creative_name(number, label):
 
 def mail_lp_name(number, label):
     return f"mail{number}-{label}" if label else f"mail{number}"
+
+
+# Miesiące po polsku BEZ znaków diakrytycznych — wartość ląduje w adresie URL.
+PL_MONTHS = ["styczen", "luty", "marzec", "kwiecien", "maj", "czerwiec", "lipiec",
+             "sierpien", "wrzesien", "pazdziernik", "listopad", "grudzien"]
+
+
+def utm_campaign_slug(campaign_name, today=None):
+    """Wartość `utm_campaign` dla mailingu: nazwa kampanii ucięta PRZED datą, plus
+    miesiąc wysyłki słownie (`Household 08-12.2026` -> `household_sierpien`).
+
+    Odtworzone z gotowego arkusza klienta. Sama nazwa kampanii nie wystarcza: niesie
+    ZAKRES miesięcy (`08-12.2026`), a w adresie ma stać miesiąc tej konkretnej wysyłki.
+    Ucinamy na pierwszym członie z cyfrą, bo to właśnie tam zaczyna się data.
+
+    To tylko wartość domyślna — użytkownik nadpisuje ją w panelu (adres podany ręcznie
+    ze swoim `utm_source` nie dostaje już żadnych UTM-ów z szablonu).
+    """
+    words = []
+    for w in re.split(r"[\s_]+", (campaign_name or "").strip()):
+        if not w or re.search(r"\d", w):
+            break
+        words.append(w)
+    base = normalize(" ".join(words)) or normalize(campaign_name) or "kampania"
+    return f"{base}_{PL_MONTHS[(today or datetime.date.today()).month - 1]}"
 
 
 def next_mail_number(existing_lps):

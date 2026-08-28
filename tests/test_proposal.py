@@ -1,4 +1,5 @@
 """Tests for the proposal builder: standard GDN case + existing-structure merge."""
+import datetime
 import json
 import os
 import sys
@@ -131,6 +132,144 @@ check("każdy creative wskazuje materiał z WŁASNEGO folderu",
       [c["source_path"] for c in ads_s["300x250"]["creatives"]],
       ["prospecting/300x250", "remarketing/300x250"])
 check("4 tagi = 2 ady × 2 LP", len(ps["tags"]), 4)
+
+print("\nFORMATY Z TREŚCI ZLECENIA — źródło bez paczki (realny komentarz o WP):")
+MSG_WP = ("LP wp.pl (tu będą potrzebne kody pod formaty 970x200, 970x300, 750x300, "
+          "750x200, 750x100, 160x600, 300x250, 300x600 i native ad): "
+          "https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-2/\n"
+          "GDN i programmatic wg paczki.")
+check("wymiary i nazwany format przypisane do WYMIENIONEGO źródła",
+      B.formats_from_message(MSG_WP, ["GDN", "WP", "Programmatic"]),
+      {"WP": ["970x200", "970x300", "750x300", "750x200", "750x100", "160x600",
+              "300x250", "300x600", "NativeAd"]})
+check("zdanie bez wymiarów nie dokłada nic innym źródłom",
+      set(B.formats_from_message(MSG_WP, ["GDN", "WP", "Programmatic"])), {"WP"})
+# przy JEDNYM źródle zlecenia nie trzeba go wymieniać; przy kilku zgadywanie jest zakazane
+check("jedno źródło -> wymiary bez wzmianki i tak są jego",
+      B.formats_from_message("kody pod 300x250 i 750x100", ["WP"]),
+      {"WP": ["300x250", "750x100"]})
+check("kilka źródeł bez wzmianki -> nic (zgadywanie dokładałoby ady po cichu)",
+      B.formats_from_message("kody pod 300x250", ["WP", "GDN"]), {})
+check("pusta wiadomość nie wysypuje budowania", B.formats_from_message("", ["WP"]), {})
+# całe drzewo dla źródła, które NIE dostało żadnych materiałów
+WP_LINE = {"lineNumber": 1, "lpName": "linia1-WP", "source": "WP", "path": "x",
+           "reused": False, "creativeName": "linia1", "url": "https://x/"}
+pwp = B.build_proposal("WP", {"format_hint": "Display", "warnings": [], "groups": [],
+                              "units": []}, camp, WP_LINE, sources=["WP"], message=MSG_WP)
+check("placement powstaje mimo braku paczki",
+      [(pl["site"], pl["name"]) for pl in pwp["placements"]], [("WP.pl", "Display")])
+check("po jednym adzie na format z opisu",
+      [a["name"] for a in pwp["placements"][0]["ads"]],
+      ["160x600", "300x250", "300x600", "750x100", "750x200", "750x300", "970x200",
+       "970x300", "NativeAd"])
+check("kreacja jak wszędzie: linia zlecenia",
+      {c["name"] for a in pwp["placements"][0]["ads"] for c in a["creatives"]}, {"linia1"})
+check("9 tagów", len(pwp["tags"]), 9)
+# gdy źródło MA paczkę, formaty z opisu dokładają się do jego placementu, nie tworzą drugiego
+pmix2 = B.build_proposal("GDN", parsed, camp, line, sources=["GDN"],
+                         message="dorzućcie jeszcze 970x300")
+check("format z opisu dokłada się do placementu z paczki",
+      [pl["name"] for pl in pmix2["placements"]], ["Display"])
+check("...jako dodatkowy ad obok wymiarów z paczki",
+      "970x300" in [a["name"] for a in pmix2["placements"][0]["ads"]], True)
+check("...i nie gubi żadnego z paczki", len(pmix2["placements"][0]["ads"]), 7)
+
+print("\nZESTAW Z KOMENTARZA — paczka, której nazwa go nie niesie (realny przypadek KV2):")
+check("etykieta zestawu odczytana z treści zlecenia",
+      B.set_from_message("Materiały z _kv2 analogicznie do pozostałych."), "kv2")
+check("...także bez podkreślnika i z odstępem",
+      B.set_from_message("to jest KV 2, reszta bez zmian"), "kv2")
+check("kilka zestawów w opisie -> nie zgadujemy",
+      B.set_from_message("kv1 i kv3 już są, dochodzi reszta"), None)
+check("brak wzmianki -> nic", B.set_from_message("kodujemy GDN wg paczki"), None)
+check("wymiar nie udaje zestawu", B.set_from_message("kody pod 300x250"), None)
+NOSET = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    _u("300x250", None, None), _u("160x600", None, None)]}
+GDN_LINE = {"lineNumber": 1, "lpName": "linia1-GDN", "source": "GDN", "path": "x",
+            "reused": False, "creativeName": "linia1", "url": "https://x/"}
+check("zestaw z komentarza trafia do nazw adów",
+      sorted(a["name"] for a in B.build_proposal(
+          "GDN", NOSET, camp, GDN_LINE, message="materiały z _kv2 jak poprzednio"
+      )["placements"][0]["ads"]),
+      ["160x600_kv2", "300x250_kv2"])
+# nazwany zestaw daje sufiks NAWET gdy w paczce jest tylko jeden — kolejne KV bywają
+# trafficowane osobno i później, a `750x100` zderzyłoby się z `750x100_kv1`
+ONESET = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    dict(_u("300x250", None, None), set_index="kv1")]}
+check("jeden NAZWANY zestaw i tak dostaje sufiks",
+      [a["name"] for a in B.build_proposal("GDN", ONESET, camp, GDN_LINE)
+       ["placements"][0]["ads"]], ["300x250_kv1"])
+# ...ale numeracja porządkowa (`linia2/` -> `2`) nadal tylko przy kilku kompletach
+ONENUM = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    dict(_u("300x250", None, None), set_index="1")]}
+check("pojedynczy zestaw NUMEROWANY nie dokłada sufiksu",
+      [a["name"] for a in B.build_proposal("GDN", ONENUM, camp, GDN_LINE)
+       ["placements"][0]["ads"]], ["300x250"])
+# paczka z własnym oznaczeniem nie daje się nadpisać komentarzem
+check("własny zestaw paczki wygrywa z komentarzem",
+      [a["name"] for a in B.build_proposal("GDN", ONESET, camp, GDN_LINE,
+                                           message="materiały z _kv2")
+       ["placements"][0]["ads"]], ["300x250_kv1"])
+
+print("\nWP dostaje materiały tylko dwiema drogami (ustalenie usera):")
+# 1) folder nazwany WP — reszta paczki zostaje przy swoich źródłach
+WP_MIX = {"format_hint": "Display", "warnings": [], "groups": [
+    {"name": "GDN", "source_hint": "GDN", "n_entries": 1},
+    {"name": "WP", "source_hint": "WP", "n_entries": 2}],
+    "units": [_u("300x250", "GDN", "GDN"), _u("970x300", "WP", "WP"),
+              _u("750x200", "WP", "WP")]}
+pwpmix = B.build_proposal("GDN", WP_MIX, camp, WP_LINE, sources=["GDN", "WP"])
+check("folder `WP/` -> Site WP, reszta zostaje przy swoim",
+      sorted((pl["site"], tuple(sorted(a["name"] for a in pl["ads"])))
+             for pl in pwpmix["placements"]),
+      [("CG_GDN", ("300x250",)), ("WP.pl", ("750x200", "970x300"))])
+# 2) samo źródło WP + paczka z JEDNYM folderem: folder nie staje się grupą (nie ma obok
+# czego być obcym), więc materiały idą na źródło zlecenia — jakkolwiek folder się nazywa
+WP_ONE = {"format_hint": "Display", "warnings": [], "groups": [],
+          "units": [_u("300x250", "Afiliacja", None), _u("970x200", "Afiliacja", None)]}
+check("jedno źródło + jeden folder -> wszystko na to źródło",
+      [(pl["site"], sorted(a["name"] for a in pl["ads"]))
+       for pl in B.build_proposal("WP", WP_ONE, camp, WP_LINE, sources=["WP"])["placements"]],
+      [("WP.pl", ["300x250", "970x200"])])
+# ...ale afiliacja NIE jest wiązana z WP na sztywno: obok rozpoznanego folderu jest
+# zwykłą obcą grupą, o którą narzędzie pyta, a nie cichym materiałem WP
+AFI_MIX = dict(WP_MIX, groups=[{"name": "GDN", "source_hint": "GDN", "n_entries": 1},
+                               {"name": "Afiliacja", "source_hint": None, "n_entries": 1}],
+               units=[_u("300x250", "GDN", "GDN"), _u("970x200", "Afiliacja", "Afiliacja")])
+check("afiliacja obok GDN to obca grupa do decyzji, nie materiał WP",
+      [q["id"] for q in B.build_proposal("GDN", AFI_MIX, camp, WP_LINE,
+                                         sources=["GDN", "WP"])["questions"]],
+      ["groups"])
+
+print("\nnierozpoznany ZESTAW materiałów -> ostrzeżenie zamiast cichego scalenia:")
+# Dwa komplety tych samych wymiarów w folderach nazwanych inaczej niż `linia{N}`/`KV{N}`.
+# Parser nie ma z czego poznać, że to zestawy, a build zwijał je w JEDEN ad i drugi
+# komplet znikał bez śladu. Teraz kolizja jest wykrywana tam, gdzie realnie zachodzi.
+parsed_dup = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    _u("300x250", "wariant_A", None), _u("160x600", "wariant_A", None),
+    _u("300x250", "wariant_B", None), _u("160x600", "wariant_B", None)]}
+pdup = B.build_proposal("GDN", parsed_dup, camp, line)
+check("dwa komplety w jednym adzie -> ostrzeżenie na każdy wymiar",
+      len([w for w in pdup["warnings"] if "to samo miejsce" in w]), 2)
+check("...ostrzeżenie mówi, KTÓRE materiały kolidują",
+      all(f"wariant_A/{d}" in w and f"wariant_B/{d}" in w
+          for d, w in zip(["160x600", "300x250"],
+                          sorted(x for x in pdup["warnings"] if "to samo miejsce" in x))),
+      True)
+check("...i podpowiada, jak to rozróżnić",
+      "KV1_" in pdup["warnings"][0], True)
+# rozpoznany zestaw ma własny sufiks w nazwie ada, więc nic nie koliduje
+parsed_sets = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
+    dict(_u("300x250", "linia1", None), set_index="1", source_path="linia1/300x250"),
+    dict(_u("300x250", "linia2", None), set_index="2", source_path="linia2/300x250")]}
+psets = B.build_proposal("GDN", parsed_sets, camp, line)
+check("rozpoznany zestaw NIE alarmuje",
+      [w for w in psets["warnings"] if "to samo miejsce" in w], [])
+check("...bo dostaje osobne ady", sorted(a["name"] for a in psets["placements"][0]["ads"]),
+      ["300x250_1", "300x250_2"])
+# foldery rozdzielone na dwa LP też nie kolidują — każdy karmi INNĄ linię
+check("foldery przypisane do różnych LP nie alarmują",
+      [w for w in ps["warnings"] if "to samo miejsce" in w], [])
 
 print("\nzip mieszany: foldery LP + prawdziwy folder formatu (screening):")
 parsed_mixed = {
@@ -283,12 +422,58 @@ check("folder formatu tego samego źródła nie udaje obcego źródła",
       {pl["source"] for pl in pmeta["placements"]}, {"Meta"})
 check("oba na Site źródła", {pl["site"] for pl in pmeta["placements"]}, {"CG_Facebook"})
 by_name = {pl["name"]: pl for pl in pmeta["placements"]}
-check("statyki mają swoje wymiary, a nie karty karuzeli",
+# zgłoszone: folder stoi już w nazwie placementu, więc w nazwie ada się dublował
+check("statyki mają swoje wymiary, a nie karty karuzeli — i bez nazwy folderu",
       sorted(a["name"] for a in by_name["Statyki"]["ads"]),
-      ["statyki_1080x1920_1", "statyki_1200x628_1", "statyki_1200x628_2"])
-check("karuzela ma karty", sorted(a["name"] for a in by_name["Karuzela"]["ads"]),
+      ["1080x1920_1", "1200x628_1", "1200x628_2"])
+# karta karuzeli nie ma wymiaru, więc bez wariantu zostałoby samo `1`/`2`
+check("karuzela ma karty — tam wariant ZOSTAJE, bo nie ma wymiaru",
+      sorted(a["name"] for a in by_name["Karuzela"]["ads"]),
       ["karuzela_1", "karuzela_2"])
 check("5 tagów = 5 adów × 1 linia", len(pmeta["tags"]), 5)
+# `video` i `animacje` wskazują w mapie Mety TEN SAM placement `Animacje`, więc wariant
+# jest tam jedynym rozróżnikiem adów — bez niego oba komplety zlałyby się w jeden ad
+PARSED_2F = {"format_hint": "Animacje", "warnings": [], "groups": [], "units": [
+    _um("300x250", "video", None), _um("300x250", "animacje", None)]}
+p2f = B.build_proposal("Meta", PARSED_2F, camp, META_LINE)
+check("dwa foldery na jednym placemencie -> wariant ZOSTAJE w nazwie ada",
+      sorted(a["name"] for a in p2f["placements"][0]["ads"]),
+      ["animacje_300x250", "video_300x250"])
+check("...i nadal jeden placement", [pl["name"] for pl in p2f["placements"]], ["Animacje"])
+
+print("\npaczka Mety z realnego zlecenia NNW — wariant pliku, typ pliku, sufiks zestawu:")
+# Odtworzone z gotowego arkusza klienta (Promocja NNW 08-09.2026): wideo idzie na
+# placement `Video`, statyki na `Display`, a ad nazywa się ogonem nazwy pliku od wymiaru.
+def _umeta(dim, tag, typ, sset):
+    return {"dimension": dim, "file_tag": tag, "variant": None, "card_index": None,
+            "set_index": sset, "type": typ, "packaged": False, "group": None,
+            "source_path": f"kv{sset[-1]}-meta"}
+
+
+PARSED_NNW = {"format_hint": "Video", "warnings": [], "groups": [], "units": [
+    _umeta("1080x1080", "1080x1080-a", "image", "KV1"),
+    _umeta("1080x1080", "1080x1080-b", "image", "KV1"),
+    _umeta("1080x1080", "1080x1080-kv1", "video", "KV1"),
+    _umeta("1200x628", None, "image", "KV1"),
+    _umeta("1080x1080", "1080x1080-a", "image", "KV3"),
+    _umeta("1080x1080", "1080x1080-kv3", "video", "KV3")]}
+pnnw = B.build_proposal("Meta", PARSED_NNW, camp, META_LINE)
+byn = {pl["name"]: sorted(a["name"] for a in pl["ads"]) for pl in pnnw["placements"]}
+check("mp4 i statyki rozchodzą się na osobne placementy", sorted(byn), ["Display", "Video"])
+check("warianty jednego wymiaru to OSOBNE ady, nazwane ogonem pliku",
+      byn["Display"], ["1080x1080-a_KV1", "1080x1080-a_KV3", "1080x1080-b_KV1",
+                       "1200x628_KV1"])
+# plik, który sam niesie oznaczenie zestawu, nie dostaje go drugi raz
+check("nazwa niosąca zestaw nie dostaje sufiksu drugi raz",
+      byn["Video"], ["1080x1080-kv1", "1080x1080-kv3"])
+check("nic nie ginie: 6 plików -> 6 adów", len(pnnw["tags"]), 6)
+# paczka jednorodna typem zostaje przy nazwie z format_hint — typ rozstrzyga tylko przy
+# mieszance, inaczej nietypowy folder znów robiłby własny placement
+PARSED_ONE = dict(PARSED_NNW, units=[u for u in PARSED_NNW["units"] if u["type"] == "video"])
+check("jednorodna paczka -> placement nadal z format_hint",
+      [pl["name"] for pl in B.build_proposal("Meta", PARSED_ONE, camp, META_LINE)["placements"]],
+      ["Animacje"])
+
 # folder formatu tego źródła to nie „które źródło kodujemy" — pytanie o grupy odpada,
 # a placement nie ma grupy, po której UI mogłoby go ukryć (domyślna odpowiedź na to
 # pytanie zaznaczała tylko PIERWSZĄ grupę, więc druga wypadała z drzewa bez słowa)
@@ -452,14 +637,39 @@ MCONF = B.source_conf("Mailing")
 check("numer wysyłki z kampanii: mail1 istnieje -> mail2",
       MM.next_mail_number([{"lpName": "mail1-mbank"}, {"lpName": "linia3-GDN"}]), 2)
 check("pusta kampania -> mail1", MM.next_mail_number([]), 1)
-mlines = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1)
+
+# `utm_campaign` nie wynika z samej nazwy kampanii — niesie ona ZAKRES miesięcy
+# (`08-12.2026`), a w adresie ma stać miesiąc TEJ wysyłki
+check("utm_campaign odtwarza wartość z gotowego arkusza klienta",
+      MM.utm_campaign_slug("Household 08-12.2026", datetime.date(2026, 8, 27)),
+      "household_sierpien")
+check("...miesiąc idzie za dniem trafficowania, nie za nazwą kampanii",
+      MM.utm_campaign_slug("Household 08-12.2026", datetime.date(2026, 11, 2)),
+      "household_listopad")
+check("...kilka słów przed datą zostaje w całości",
+      MM.utm_campaign_slug("Promocja NNW 08-09.2026", datetime.date(2026, 8, 1)),
+      "promocja_nnw_sierpien")
+check("...polskie znaki znikają, bo wartość ląduje w adresie",
+      MM.utm_campaign_slug("Ubezpieczenia na życie", datetime.date(2026, 12, 1)),
+      "ubezpieczenia_na_zycie_grudzien")
+check("...nazwa zaczynająca się od cyfry nie daje pustej podstawy",
+      MM.utm_campaign_slug("2026 household", datetime.date(2026, 5, 4)),
+      "2026_household_maj")
+check("...brak nazwy nie wysypuje budowania",
+      MM.utm_campaign_slug("", datetime.date(2026, 1, 9)), "kampania_styczen")
+check("...dwanaście miesięcy bez diakrytyków", len(MM.PL_MONTHS), 12)
+AUG = datetime.date(2026, 8, 27)          # dzień trafficowania — miesiąc idzie do UTM-ów
+mlines = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1, today=AUG)
 check("etykiety startują jako a, b, c — automat nie zgaduje, co jest CTA",
       [(l["creativeName"], l["lpName"]) for l in mlines],
       [("mail-1-a", "mail1-a"), ("mail-1-b", "mail1-b"), ("mail-1-c", "mail1-c")])
-check("UTM-y doklejone automatycznie",
+# `utm_campaign` odtwarza wartość z gotowego arkusza klienta: nazwa kampanii ucięta
+# PRZED datą + miesiąc wysyłki słownie. Sama nazwa dawałaby `household_08_12_2026`,
+# a w arkuszu stało `household_sierpien`.
+check("UTM-y doklejone automatycznie, z miesiącem wysyłki",
       mlines[0]["url"],
       "https://www.mbank.pl/?utm_source=mailing&utm_medium=cpc"
-      "&utm_campaign=household_08_12_2026")
+      "&utm_campaign=household_sierpien")
 check("adres z własnym utm_source nie dostaje drugiego",
       B.mailing_lines(dict(PARSED_MAIL, mailings=[{"file": "i.html", "links":
           ["https://x.pl/?utm_source=inne"], "skippedLinks": []}]),
@@ -483,9 +693,11 @@ check("linki bez adresu widoczne w propozycji",
 MAIN = ("https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-8/"
         "?utm_source=mailing&utm_medium=cpc&utm_campaign=nnw_08_26")
 with_cta = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1, main_url=MAIN)
+# LP wiersza CTA jest bez sufiksu (`mail1`) — tak jest w gotowych tagach klienta;
+# kreacja i ad sufiks zachowują (`mail-1-CTA`), użytkownik potwierdził tę różnicę
 check("zaślepka `#` + adres ze zlecenia -> dochodzi wiersz CTA",
       [(l["label"], l["creativeName"], l["lpName"]) for l in with_cta][-1:],
-      [("CTA", "mail-1-CTA", "mail1-CTA")])
+      [("CTA", "mail-1-CTA", "mail1")])
 check("CTA dostaje adres ze zlecenia, bez drugich UTM-ów",
       with_cta[-1]["url"], MAIN)
 check("...a etykiety linków z paczki się NIE przesuwają",
@@ -510,10 +722,8 @@ check("po nazwaniu linków wychodzi struktura z gotowych tagów klienta",
       ["mail-1-CTA", "mail-1-mbank", "mail-1-regulamin", "mail-1-slowniczek"])
 check("dopisany link niesie swój adres bez UTM-ów, gdy user podał go sam",
       mlines2[3]["url"], "https://www.mbank.pl/lp2/sierpien-2/")
-check("...i ma swoje LP", mlines2[3]["lpName"], "mail1-CTA")
-# wyczyszczenie etykiety wraca do domyślnej litery, a nie do pustej nazwy; LP bez sufiksu
-# (`mail1`, jak dla CTA w gotowych tagach) user ustawia w edytorze linii, gdzie nazwa LP
-# i nazwa kreacji są osobnymi polami
+check("...i ma LP bez sufiksu, bo to CTA", mlines2[3]["lpName"], "mail1")
+# wyczyszczenie etykiety wraca do domyślnej litery, a nie do pustej nazwy
 check("wyczyszczona etykieta wraca do domyślnej litery",
       B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1,
                       override={"1": [{"label": " "}]})[0]["lpName"], "mail1-a")
@@ -555,7 +765,6 @@ print("\nTRYB SERWUJĄCY (programmatic) — inny model obiektów niż tracking:"
 # Odwzorowane z realnego placementu klienta: JEDEN placement z listą wymiarów, kreacja
 # nazwana wymiarem, jeden ad `Display` ze wszystkimi kreacjami, LP per audiencja.
 # Adów `{wymiar} Default Web Ad` tu nie ma — tworzy je CM i bierze default kampanii.
-import datetime
 CAMP_SRV = {"id": "9", "name": "household_08-12.2026", "status": "existing"}
 def _usrv(dim, sset):
     return {"dimension": dim, "variant": None, "card_index": None, "set_index": sset,
@@ -564,7 +773,7 @@ def _usrv(dim, sset):
 
 
 PARSED_SRV = {"format_hint": "Display", "warnings": [], "groups": [], "units": [
-    _usrv("300x250", "KV1"), _usrv("970x250", "KV1"), _usrv("300x250", "KV3")]}
+    _usrv("300x250", "kv1"), _usrv("970x250", "kv1"), _usrv("300x250", "kv3")]}
 LINES_SRV = [{"lineNumber": 1, "lpName": f"linia1-programmatic-{a}", "creativeName": "linia1",
               "source": "programmatic", "label": a, "keyword": "refinans", "path": "a",
               "reused": False, "url": f"https://x/a?aud={a}"}
@@ -572,12 +781,14 @@ LINES_SRV = [{"lineNumber": 1, "lpName": f"linia1-programmatic-{a}", "creativeNa
 psrv = B.build_proposal("Programmatic", PARSED_SRV, CAMP_SRV, lines=LINES_SRV,
                         sources=["Programmatic"], line_label="refinans",
                         today=datetime.date(2026, 8, 17))
+# ZESTAW jest nazwą linii w nazwie placementu — tak stoi w gotowych tagach klienta
+# (`promocja_nnw_08-09.2026_kv3_11.08.2026-prospecting`), bez słowa klucza obok
 check("placement na (zestaw × audiencja), nazwa wg wzorca z configu",
       [pl["name"] for pl in psrv["placements"]],
-      ["household_08-12.2026_refinans-KV1_17.08.2026-prospecting",
-       "household_08-12.2026_refinans-KV1_17.08.2026-retargeting",
-       "household_08-12.2026_refinans-KV3_17.08.2026-prospecting",
-       "household_08-12.2026_refinans-KV3_17.08.2026-retargeting"])
+      ["household_08-12.2026_kv1_17.08.2026-prospecting",
+       "household_08-12.2026_kv1_17.08.2026-retargeting",
+       "household_08-12.2026_kv3_17.08.2026-prospecting",
+       "household_08-12.2026_kv3_17.08.2026-retargeting"])
 check("wymiary zadeklarowane na placemencie, per zestaw",
       [pl["sizes"] for pl in psrv["placements"]],
       [["300x250", "970x250"], ["300x250", "970x250"], ["300x250"], ["300x250"]])
@@ -595,17 +806,31 @@ check("LP `-default` NIE jest użyte w drzewie (idzie na default kampanii)",
           for a in pl["ads"] for c in a["creatives"]), False)
 check("audiencja i zestaw zapisane na węźle (dla writera)",
       [(pl["audience"], pl["set"]) for pl in psrv["placements"]],
-      [("prospecting", "KV1"), ("retargeting", "KV1"),
-       ("prospecting", "KV3"), ("retargeting", "KV3")])
+      [("prospecting", "kv1"), ("retargeting", "kv1"),
+       ("prospecting", "kv3"), ("retargeting", "kv3")])
 check("wszystko na Site programmatica",
       {pl["site"] for pl in psrv["placements"]}, {"CG_Programmatic"})
-# bez słowa klucza nazwa linii spada na konwencję, a nie na puste miejsce w nazwie
-psrv2 = B.build_proposal("Programmatic", PARSED_SRV, CAMP_SRV,
+# bez zestawów nazwą linii jest słowo klucza, a bez niego konwencja `linia{N}`
+PARSED_NOSET = dict(PARSED_SRV, units=[dict(u, set_index=None) for u in PARSED_SRV["units"]])
+check("brak zestawu -> nazwą linii jest słowo klucza",
+      B.build_proposal("Programmatic", PARSED_NOSET, CAMP_SRV, lines=LINES_SRV,
+                       sources=["Programmatic"], line_label="refinans",
+                       today=datetime.date(2026, 8, 17))["placements"][0]["name"],
+      "household_08-12.2026_refinans_17.08.2026-prospecting")
+psrv2 = B.build_proposal("Programmatic", PARSED_NOSET, CAMP_SRV,
                          lines=[dict(l, keyword=None) for l in LINES_SRV],
                          sources=["Programmatic"], today=datetime.date(2026, 8, 17))
 check("brak słowa klucza -> nazwa linii z konwencji",
       psrv2["placements"][0]["name"],
-      "household_08-12.2026_linia1-KV1_17.08.2026-prospecting")
+      "household_08-12.2026_linia1_17.08.2026-prospecting")
+# nazwa kampanii w placemencie jest tylko zlowercase'owana ze spacjami na `_` — myślnik
+# i kropka daty ZOSTAJĄ, bo tak są w arkuszu klienta (`promocja_nnw_08-09.2026`)
+check("surowa nazwa kampanii -> token placementu",
+      B.build_proposal("Programmatic", PARSED_SRV,
+                       dict(CAMP_SRV, name="Promocja NNW 08-09.2026"), lines=LINES_SRV,
+                       sources=["Programmatic"], line_label="refinans",
+                       today=datetime.date(2026, 8, 11))["placements"][0]["name"],
+      "promocja_nnw_08-09.2026_kv1_11.08.2026-prospecting")
 # GDN w tej samej paczce zostaje trackingiem — tryb serwujący jest per ŹRÓDŁO
 check("tryb serwujący nie rozlewa się na inne źródła",
       [(pl["name"], pl.get("serving")) for pl in B.build_proposal(

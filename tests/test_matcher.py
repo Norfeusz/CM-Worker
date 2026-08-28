@@ -52,8 +52,13 @@ UBEZP_CAMPS = [
 ranked, new = M.match_campaigns(
     "https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/nieruchomosci/krowa/",
     UBEZP, UBEZP_CAMPS)
-check("nieruchomosci/krowa -> same campaign (shares 'nieruchomosci')",
-      (ranked[0]["campaignId"], ranked[0]["common"], new), ("C1", 1, False))
+# JEDEN wspólny człon przy dwuczłonowej ścieżce już NIE wybiera kampanii automatycznie
+# (`nieruchomosci/krowa` vs `nieruchomosci/znizka`) — user zgłosił, że to za luźne.
+# Kandydat zostaje na liście do ręcznego wyboru, ale narzędzie proponuje nową kampanię.
+check("nieruchomosci/krowa -> kandydat zostaje, ale to za mało na auto-wybór",
+      (ranked[0]["campaignId"], ranked[0]["common"], ranked[0]["enough"], new),
+      ("C1", 1, False, True))
+check("...i UI dowie się DLACZEGO", "1 z 2 członów" in ranked[0]["why"], True)
 
 ranked2, new2 = M.match_campaigns(
     "https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/zwierzeta/krowa/",
@@ -106,6 +111,37 @@ check("...i da się go podać per wywołanie",
 
 check("zwierzeta/krowa -> suggest NEW campaign (no shared segment)",
       (new2, ranked2[0]["common"]), (True, 0))
+
+print("\nPRÓG LICZBY CZŁONÓW — jeden wspólny człon przy dłuższej ścieżce to za mało:")
+KONTA = ["indywidualny", "konta"]
+def _lp(path, cid="C1", name="Kampania"):
+    return {"campaignId": cid, "campaignName": name, "lpName": "linia1-GDN",
+            "lpUrl": f"https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/{path}/"}
+# zgłoszony przypadek: obie ścieżki zaczynają się od `standard`, dalej nie mają nic wspólnego
+STD = "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/standard/google/1000/"
+check("standard/google/1000 vs standard/biedronka/other -> NOWA kampania",
+      M.match_campaigns(STD, KONTA, [_lp("standard/biedronka/other")])[1], True)
+check("...ale dwa wspólne człony już wybierają automatycznie",
+      M.match_campaigns(STD, KONTA, [_lp("standard/google/other")])[1], False)
+# przy ścieżce KRÓTSZEJ niż próg wymagamy tylko tego, co jest — inaczej jednoczłonowe
+# adresy (`szkola-8`) nie dopasowałyby się do niczego nigdy
+check("jednoczłonowa ścieżka: jeden człon WYSTARCZA",
+      M.match_campaigns("https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/mkonto/",
+                        KONTA, [_lp("mkonto")])[1], False)
+check("...także gdy LP kampanii jest głębsze niż nasz adres",
+      M.match_campaigns("https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/mkonto/",
+                        KONTA, [_lp("mkonto/promocja/lato")])[1], False)
+check("próg jest jedną stałą", M.MIN_SEGMENTS, 2)
+check("...i da się go podać per wywołanie",
+      M.match_campaigns(STD, KONTA, [_lp("standard/biedronka/other")],
+                        min_segments=1)[1], False)
+# kandydat poniżej progu nadal wygrywa ranking z kandydatem bez niczego wspólnego,
+# ale kandydat SPEŁNIAJĄCY próg wygrywa z nim
+r_thr, _ = M.match_campaigns(STD, KONTA, [
+    _lp("standard/biedronka/other", "CX", "Biedronka"),
+    _lp("standard/google/other", "CY", "Google")])
+check("kandydat spełniający próg jest pierwszy",
+      [(c["campaignId"], c["enough"]) for c in r_thr], [("CY", True), ("CX", False)])
 
 print("\nline resolution within a campaign (path -> line number, source from UI):")
 FIRMY_LPS = [

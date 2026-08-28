@@ -73,9 +73,9 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (OSIEM plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`
-(**475/475 zielone na 27.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 86, proposal 136, orchestrate 44, create_site 15,
-ai_agents 104, export_tags 23, parse_zip 51, guard 16.
+(**539/539 zielone na 28.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 94, proposal 182, orchestrate 44, create_site 15,
+ai_agents 104, export_tags 23, parse_zip 61, guard 16.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
 (`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
@@ -425,11 +425,67 @@ niezaznaczoną. Wyjątki: folder przypisany do LP i folder będący FORMATEM źr
 (`statyki/` dla Mety) są zidentyfikowane. Warunek „obok stoi rozpoznany folder" jest
 konieczny — bez niego grupami stawały się foldery kart karuzeli (`1`, `2`) i wariantów.
 
-**`WP` jako źródło** — Site `CG_WP` (id 6781651, **już istniał** na koncie; obok są `WP`,
-`Wp.pl`, `Wp.pl_mailing`, `CG_Dom.wp.pl`, `CG_Wawalove.wp.pl`). W parserze `wp` jest
+**`WP` jako źródło** — Site **`WP.pl`** (tak nazywa się w produkcyjnym arkuszu klienta;
+decyzja usera z 28.08.2026). Na koncie testowym istnieją obok `CG_WP` (6781651), `WP`,
+`Wp.pl`, `Wp.pl_mailing`, `CG_Dom.wp.pl`, `CG_Wawalove.wp.pl` — **sprawdź wielkość liter
+przed pierwszym realnym zapisem**, `_status` porównuje nazwy dokładnie. W parserze `wp` jest
 rozpoznawane **tylko jako osobne słowo** — jako podciąg trafiało w `warszawawpigulce.pl`.
 
-## Dopasowanie KAMPANII — próg podobieństwa członu (27.08.2026)
+## WARIANT PLIKU, FORMATY Z OPISU, ZESTAW Z KOMENTARZA (28.08.2026)
+
+Sesja treningowa na CAŁEJ kampanii `Promocja NNW 08-09.2026` (6 paczek klienta + jego
+gotowy arkusz tagów). Pełny opis: `data/training_examples.md`, pozycja 4. Efekt: struktura
+budowana przez narzędzie jest **identyczna z arkuszem** (GDN 24/24 ady, Meta Display 22/22,
+Video 6/6, DemGen 2/2, programmatic 4/4 placementy) — zero brakujących, zero nadmiarowych.
+
+* **`parse_zip._file_tag`** — ogon nazwy pliku OD WYMIARU w dół (`1080x1080-a`,
+  `1200x1200_karuzela-4`) wchodzi do klucza jednostki i do `_package_dims`. Bez tego
+  wszystkie pliki jednego wymiaru zwijały się w JEDNĄ jednostkę: paczka Mety dawała 4
+  jednostki zamiast 28, karuzela 2 zamiast 8. **20 z 28 adów przepadało bez śladu.**
+  `build_proposal._ad_name` bierze tag zamiast wymiaru I karty (tag niesie oba).
+* **`placementByType`** (config Facebook/Meta) — `mp4` → `Video`, statyki → `Display`.
+  Działa **tylko gdy porcja materiałów miesza formaty**; przy jednorodnej zostaje
+  `format_hint`, żeby nieznany folder resztek nie robił własnego placementu.
+* **Sufiks zestawu MAŁYMI literami** (`750x100_kv1`) — jak w arkuszu klienta.
+  Zestaw **nazwany** (`kv1`) trafia do nazwy ada ZAWSZE, także gdy w paczce jest jeden:
+  kolejne KV bywają trafficowane osobno i później, więc `750x100` zderzyłoby się z
+  `750x100_kv1` z poprzedniego rzutu. Zestaw będący samą CYFRĄ (`linia2/` → `2`) to
+  numeracja porządkowa i tam sufiks dochodzi dopiero przy kilku kompletach.
+  `_carries_set` nie dokłada sufiksu tam, gdzie nazwa już go niesie (`1080x1080-kv1`) —
+  i świadomie ignoruje zestawy-cyfry, bo `1` jako podciąg trafiało w `160x600`.
+* **DemGen: ad = ZESTAW.** `kv1-demgen/` (4 wymiary) to JEDEN ad `kv1`, jak w arkuszu.
+  `adKey: "variant"` bierze zestaw, gdy folder wariantu nie występuje.
+* **`formats_from_message`** — formaty wypisane w TREŚCI zlecenia tworzą ady, nawet gdy
+  źródło nie dostało żadnej paczki (WP: „kody pod 970x200, … i native ad" → 9 adów).
+  Wymiary trafiają do źródła WYMIENIONEGO w tym samym fragmencie (linie i `;`); przy
+  jednym źródle zlecenia wzmianka nie jest potrzebna, przy kilku **nie zgadujemy**.
+  Nazwane formaty bez wymiaru (`native ad` → `NativeAd`) z `messageFormats` w configu.
+  Gdy źródło MA paczkę, formaty z opisu dokładają się do jego placementu.
+* **`set_from_message`** — „materiały z _kv2 analogicznie do pozostałych" nadaje zestaw
+  jednostkom, które własnego nie mają (paczka z `kv1` w nazwie wygrywa z komentarzem).
+  Tylko gdy wiadomość wymienia DOKŁADNIE JEDEN zestaw. To ustalenie usera: zestaw dla
+  paczki bez oznaczenia podaje się w komentarzu, a nie osobnym polem formularza.
+* **Placement serwujący**: `{campaign}` to nazwa kampanii zlowercase'owana ze spacjami na
+  `_` (`promocja_nnw_08-09.2026`) — NIE `matcher.normalize`, który zwinąłby `08-09.2026`.
+  `{line}` to **zestaw**, gdy istnieje; słowo klucza dopiero, gdy zestawów nie ma.
+* **Ostrzeżenie o utracie materiału**: gdy dwa RÓŻNE pliki tego samego wymiaru walczą
+  o jedną nazwę ada, propozycja niesie ostrzeżenie zamiast po cichu brać pierwszy.
+  Warunek „ten sam wymiar" jest konieczny — DemGen świadomie zwija wymiary w jeden ad.
+* **WP dostaje materiały dwiema drogami** (ustalenie usera; afiliacja NIE jest wiązana
+  z WP na sztywno): folder w paczce nazwany `WP`, albo samo źródło WP + paczka z JEDNYM
+  folderem (folder nie staje się wtedy grupą, więc materiały idą na źródło zlecenia).
+  Obie działały bez zmian w kodzie i są teraz przykryte testami.
+
+## Dopasowanie KAMPANII — próg LICZBY członów (28.08.2026)
+
+`matcher.MIN_SEGMENTS = 2`: jeden wspólny człon przy dłuższej ścieżce **nie wybiera już
+kampanii automatycznie** (`standard/google/1000` vs `standard/biedronka/other`). Przy
+ścieżce krótszej próg schodzi do jej długości, inaczej `szkola-8` ↔ `szkola-2` (jeden
+człon po anchorze) nie dopasowałoby się nigdy. Kandydat poniżej progu **zostaje w
+rankingu** z `enough=False` i powodem w `why`; UI pokazuje go w pickerze jako
+„Najbliższe istniejące kampanie", więc podniesienie progu nie chowa niczego przed userem.
+
+### Próg podobieństwa członu (27.08.2026)
 
 Podstawą jest, jak od początku, **wspólny prefiks członów ścieżki** po anchorze
 advertisera (`common`, porównanie dokładne). Dodatkiem jest `near`: człon może się różnić
@@ -713,32 +769,41 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
     klucza per adres (patrz sekcja o konwencji nazw). Automatyczne skracanie do członu przed
     cyframi świadomie NIE zostało zrobione: user podaje wprost, czego chce.
 13. **Cofanie nie ma „ponów" (redo)** ani skrótu Ctrl+Z. Świadomie minimalny zakres.
-14. **Nazwy adów w paczkach Meta niosą nazwę folderu** (`statyki_1080x1920_1`), która po
-   06.08.2026 stoi już w nazwie placementu (`Statyki`) — czyli dubluje się. Zostawione
-   bez zmian: user zgłaszał tylko placementy, a `adKey: variant_dim_card` dotyczy też
-   karuzeli, gdzie bez prefiksu zostałoby samo `1`/`2`/`3`. **Do decyzji usera.**
+14. ~~**Nazwy adów w paczkach Meta niosą nazwę folderu**~~ — **ZROBIONE 28.08.2026**:
+   folder będący FORMATEM źródła znika z nazwy ada (`1080x1920_1` na placemencie
+   `Statyki`), ale zostaje tam, gdzie jednostki nie mają wymiaru — inaczej z karty
+   karuzeli zostałoby samo `1`/`2`. Patrz `drop_variant_in()`.
+15. **Realny zapis struktury NNW na koncie testowym** — propozycja zgadza się z arkuszem
+   klienta co do ada, ale ani razu jej nie zapisaliśmy. Naturalny następny krok
+   weryfikacyjny (dry-run przez UI, potem decyzja usera o `--execute`).
+16. **⚠️ Orkiestrator NIE MA gałęzi `serving`.** `serving_placements` produkuje węzły
+   z `serving: True`, `sizes`, `source_path`, a `Orchestrator.run` czyta tylko
+   `name`/`ads`/`creatives` i nic w `/api/commit` tego nie blokuje. Realny zapis
+   propozycji programmatica przeszedłby dziś **po cichu jako zwykły tracking**: placement
+   1×1 zamiast listy wymiarów, kreacje `TRACKING_TEXT` o nazwach wymiarów, zero uploadu.
+   Zanim powstanie writer (punkt 7), `/api/commit` powinien przy `dryRun:false`
+   **odmawiać** dla placementów `serving`.
 
-## HANDOFF — pierwsze kroki w nowej sesji (stan na 27.08.2026, koniec dnia)
+## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **siedem** plików (lista wyżej).
-   **Musi być 475/475.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 539/539.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest
    konieczny po KAŻDEJ zmianie w Pythonie** — user stracił na tym czas 27.08: zgłosił
    „mailing nie działa", a to była poprzednia wersja modułów w pamięci procesu.
 3. **UWAGA NA STAN REPO.** Gałąź `feat/campaign-site-and-ai-agents`, PR nieotwarty, nic
-   nie wypchnięte. Dwa commity z 27.08: `a3d8dae` (słowo klucza, wiele źródeł, paczki
-   zagnieżdżone) i `14b69d3` (programmatic + mailing + WP + resztki). **W drzewie roboczym
-   zostało 12 plików NIEZACOMMITOWANYCH** — user był pytany, nie odpowiedział:
-   * dopasowanie kampanii: `utm_campaign` wycofane, próg podobieństwa 70%, `matchedBy` w UI
-   * **załatana dziura w bezpieczniku** (upload assetów) + nowy `tests/test_guard.py`
-   * nowy `parser/repack.py` (jeden zip na wymiar)
-   * wiersz `CTA` w mailingu z adresu zlecenia
-   * kilka paczek w jednym zleceniu (`zips[]`, `merge_parsed`, `_zip` na jednostce)
-   * `_strip_root` nie obcina folderu z wymiarem; `_normalize` nie spłaszcza podfolderów
-   Przed commitem: skan na `cg-pl.app.n8n.cloud`, `sk-ant`, `AIza` i na wartość
+   nie wypchnięte. Ostatni commit: `3ba2b3d` (27.08). **W drzewie roboczym zostało
+   9 plików NIEZACOMMITOWANYCH z 28.08** — user był pytany, nie odpowiedział:
+   `config/source_map.json`, `data/training_examples.md`, `parser/parse_zip.py`,
+   `scripts/build_proposal.py`, `scripts/matcher.py`, `scripts/serve.py`, `ui/index.html`
+   i trzy pliki testów. Zakres: `file_tag`, `placementByType`, `formats_from_message`,
+   `set_from_message`, próg `MIN_SEGMENTS`, `utm_campaign_slug`, sufiks zestawu małymi,
+   DemGen ad=zestaw, Site `WP.pl`, LP CTA mailingu bez sufiksu, lista kandydatów kampanii
+   w UI. Przed commitem: skan na `cg-pl.app.n8n.cloud`, `sk-ant`, `AIza` i na wartość
    `N8N_TOKEN` z `start.bat` (**nie wpisuj tej wartości do żadnego pliku w repo**).
+   `data/samples/nnw/` (materiały klienta + arkusz) jest gitignorowany — **nie commituj**.
 4. **Programmatic Etap 2 — TU SKOŃCZYLIŚMY, to jest następny krok.** Gotowe: repakowanie
    (`repack.unit_asset`), bezpiecznik pod upload, drzewo i dry-run (Etap 1). Do napisania
    w `cm_write.py`:
@@ -754,21 +819,34 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    **User ZGODZIŁ SIĘ 27.08 na jeden realny zapis jednego wymiaru na koncie testowym** —
    ale dopiero gdy writer istnieje, i potwierdź to jeszcze raz przed uruchomieniem.
 5. **Pytania bez odpowiedzi** (nie zgaduj, dopytaj przy okazji):
-   * commit tych 12 plików? push? PR?
-   * dopasowanie kampanii przy JEDNYM wspólnym członie — za luźne? (dwie propozycje
-     w sekcji „Dopasowanie KAMPANII")
-   * `utm_campaign` w mailingu: w realnym arkuszu było `household_sierpien`, czego z nazwy
-     kampanii nie da się wyprowadzić — jest reguła czy user poprawia ręcznie?
-   * LP CTA w mailingu: w arkuszu klienta to `mail1` (bez sufiksu), u nas `mail1-CTA`
-   * nazwy adów Meta dublują nazwę placementu (`statyki_1080x1920_1` na `Statyki`) — p. 14
-   * inne oznaczenia zestawów niż `linia{N}` / `KV{N}`?
+   * commit tych 9 plików? push? PR?
+   * **Site `WP.pl` a konto testowe**: config stoi na `WP.pl` (nazwa z produkcyjnego
+     arkusza), a na koncie testowym jest `Wp.pl` małym `p` obok `CG_WP`. `_status`
+     porównuje dokładnie, więc przed realnym zapisem trzeba sprawdzić, co tam naprawdę
+     jest (`GET /api/sites?q=wp`).
+   * **NativeAd**: user podał, że format ma 3 wersje wg specyfikacji WP, ale też że
+     `NativeAd_v1`/`_v3` to pierwszy rzut materiałów (kv1+kv3), a drugi rzut (`_v2`)
+     NativeAd nie obejmował. Przyjęte: `_v{N}` = zestaw. Warto potwierdzić przy okazji.
+   * mailing NNW: paczka ma 3 linki (CTA + strona ochronna + słowniczek), arkusz klienta
+     tylko 2 kreacje (`CTA`, `regulamin`) — który link to `regulamin` i czy arkusz jest
+     deltą?
+   * separator zestawu: Video ma `1080x1920-kv2` (myślnik), Display `1080x1920_kv2`
+     (podkreślnik) — trzymamy niespójność klienta czy ujednolicamy?
 6. **Zmiany w promptach agentów wymagają jednego przebiegu na ŻYWYM modelu.** Czekają TRZY:
    konwencja `linia{N}-{ŹRÓDŁO}[-{słowo}]`, operacja `rename_creative_all` oraz reguły
    `zip.by_folder` (wymiary tylko z folderu, o którym mówi uwaga; rozwijanie schematu nazw).
    Atrapa webhooka tego nie wyłapie — jej odpowiedzi pisze się pod własne założenia.
 7. Największa zaległość merytoryczna to wciąż **`promote.py`** (punkt 4 kolejki) — bez niego
    AI jest kosztem stałym, nie jednorazowym.
-8. **Czego nauczyła ta sesja** (warto powtórzyć w kolejnej):
+8. **Materiały treningowe NNW** leżą w `data/samples/nnw/` (6 paczek + arkusz tagów).
+   Skrypt porównujący propozycję z arkuszem ad-po-adzie jest w historii sesji 28.08 —
+   warto go odtworzyć przy każdej zmianie w parserze: to jedyny test na PEŁNEJ kampanii.
+9. **Czego nauczyła ta sesja** (warto powtórzyć w kolejnej):
+   * **arkusz tagów klienta to zbiór ewaluacyjny, nie tylko dokumentacja** — porównanie
+     nazwa-po-nazwie wykryło, że Meta gubi 20 z 28 adów; sam parser nie protestował;
+   * **reguła wyciągnięta z jednego przypadku bywa za szeroka**: `_carries_set` po
+     podciągu zjadał sufiks `_1` w `160x600`, a `placement_by_type` zabierał nazwę
+     `format_hint` paczkom jednorodnym. Oba wyszły dopiero na istniejących testach;
    * **weryfikuj na żywo w przeglądarce.** Offline wyglądało dobrze, a live wyszło: drugie
      źródło znikające z drzewa (folder źródła zjadany jako folder LP), podwojone placementy
      serwujące, audiencje przy adresie źródła nieserwującego;

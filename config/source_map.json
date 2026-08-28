@@ -8,8 +8,8 @@
   "sources": {
     "GDN":         { "site": "CG_GDN",          "placementByFormat": { "Display": "Display", "Video": "Video" },                          "adKey": "dimension",
                      "fileFormats": { "mode": "adSuffix", "aliases": { "jpg": "png", "jpeg": "png" }, "placements": { "gif": "GIF", "html": "HTML", "png": "Display" } } },
-    "Facebook":    { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Statyki": "Statyki", "Animacje": "Animacje", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card", "lpSource": "FB" },
-    "Meta":        { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Statyki": "Statyki", "Animacje": "Animacje", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "adKey": "variant_dim_card", "lpSource": "FB", "_note": "alias of Facebook" },
+    "Facebook":    { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Statyki": "Statyki", "Animacje": "Animacje", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "placementByType": { "video": "Video", "image": "Display", "gif": "Display", "html5": "Display" }, "adKey": "variant_dim_card", "lpSource": "FB" },
+    "Meta":        { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Statyki": "Statyki", "Animacje": "Animacje", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "placementByType": { "video": "Video", "image": "Display", "gif": "Display", "html5": "Display" }, "adKey": "variant_dim_card", "lpSource": "FB", "_note": "alias of Facebook" },
     "DemGen":      { "site": "CG_Demand_Gen",   "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela" },                     "adKey": "variant" },
     "Programmatic":{ "site": "CG_Programmatic", "placementByFormat": { "Display": "Display" },                                            "adKey": "dimension", "lpSource": "programmatic",
                      "serving": { "audiences": ["default", "prospecting", "retargeting"], "placementAudiences": ["prospecting", "retargeting"],
@@ -18,6 +18,7 @@
                                   "costStructure": "CPM", "paymentSource": "PLACEMENT_AGENCY_PAID", "endYears": 3 } },
     "Mailing":     { "site": "mailsales.pl",    "placementByFormat": { "Mailing": "Mailing", "Display": "Mailing" },                     "adKey": "dimension",
                      "mailing": { "utm": "utm_source=mailing&utm_medium=cpc&utm_campaign={campaign}", "ctaLabel": "CTA" } },
-    "WP":          { "site": "CG_WP",           "placementByFormat": { "Display": "Display" },                                          "adKey": "dimension", "lpSource": "WP" }
+    "WP":          { "site": "WP.pl",           "placementByFormat": { "Display": "Display" },                                          "adKey": "dimension", "lpSource": "WP",
+                     "messageFormats": { "native ad": "NativeAd", "nativead": "NativeAd" } }
   }
 }

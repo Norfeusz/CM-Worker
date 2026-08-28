@@ -36,6 +36,28 @@ def _dim(text):
     return f"{m.group(1)}x{m.group(2)}" if m else None
 
 
+def _file_tag(base, dim):
+    """Ogon nazwy pliku OD WYMIARU w dół, gdy niesie coś więcej niż sam wymiar.
+
+    `1080x1080-a.png` -> `1080x1080-a`, `mBank_META_nnw_1200x1200_karuzela-4.jpg` ->
+    `1200x1200_karuzela-4`, `1200x628.png` -> None (nic ponad wymiar).
+
+    Dostawcy rozróżniają tym WARIANTY tego samego wymiaru. Bez tego wszystkie pliki
+    jednego wymiaru zwijały się w jedną jednostkę i materiał przepadał bez śladu:
+    w paczce Meta NNW z 14 plików na zestaw zostawały 4, czyli 20 z 28 adów znikało.
+    Prefiks produktowy (`mBank-uniqa_META_nnw_`) świadomie odpada — nazwa ada w gotowych
+    tagach klienta zaczyna się dokładnie od wymiaru.
+    """
+    if not dim:
+        return None
+    stem = os.path.splitext(base)[0]
+    m = re.search(re.escape(dim), stem, re.I)
+    if not m:
+        return None
+    tail = stem[m.start():].strip(" -_")
+    return tail if tail.lower() != dim.lower() else None
+
+
 def _list_names(zf):
     return [n for n in zf.namelist() if not n.endswith("/") and not _is_junk(n)]
 
@@ -147,7 +169,10 @@ def _set_label(seg):
         return m.group(1)                      # `linia2/` -> sufiks ada `_2`
     m = KV_RE.match(seg)
     if m:
-        return re.sub(r"\s+", "", m.group(1)).upper()    # `KV1_…/` -> `_KV1`
+        # MAŁYMI literami — tak stoi w gotowych tagach klienta (`750x100_kv1`), niezależnie
+        # od tego, jak nazwany jest folder (`KV1_NNW…/` obok `kv1-meta/`). Decyzja usera:
+        # propozycja ma być 1:1 z arkuszem, żeby nie poprawiać wielkości liter ręcznie.
+        return re.sub(r"\s+", "", m.group(1)).lower()    # `KV1_…/` -> `_kv1`
     return None
 
 
@@ -187,18 +212,26 @@ def _card_index(base):
 
 
 def _package_dims(inner_names):
-    """{wymiar: [pliki]} dla zawartości JEDNEJ zagnieżdżonej paczki.
+    """{(wymiar, ogon nazwy pliku): [pliki]} dla zawartości JEDNEJ zagnieżdżonej paczki.
 
     Wymiar czytany z folderu (`240x400/index.html`), a gdy paczka jest płaska — z nazwy
     pliku. Jednostki bez rozpoznanego wymiaru są pomijane (preview, manifesty), bo nie
-    są materiałem do trafficowania. Kilka wymiarów = paczka wielu banerów, jeden = jeden
+    są materiałem do trafficowania. Kilka pozycji = paczka wielu banerów, jedna = jeden
     baner (i wtedy zostaje przy dotychczasowej obsłudze „zip = jedna jednostka").
+
+    Ogon nazwy pliku jest w kluczu z tego samego powodu co przy plikach luźnych: paczka
+    karuzeli trzyma cztery karty jednego wymiaru (`…_1200x1200_karuzela-1.jpg` …`-4`),
+    a bez niego zwijały się w jedną jednostkę i z 8 adów zostawały 2.
     """
     out = {}
     for n in _strip_root_names(inner_names):
-        dim = _dim(_top_folder(n) or "") or _dim(os.path.basename(n)) or _dim(n)
+        base = os.path.basename(n)
+        dim = _dim(_top_folder(n) or "") or _dim(base) or _dim(n)
         if dim:
-            out.setdefault(dim, []).append(n)
+            # ogon liczymy tylko z nazwy pliku; przy wymiarze z FOLDERU (`240x400/
+            # index.html`) wszystkie pliki jednego banera muszą zostać razem
+            tag = _file_tag(base, dim) if _dim(base) else None
+            out.setdefault((dim, tag), []).append(n)
     return out
 
 
@@ -282,12 +315,14 @@ def _parse_units(zf):
         pkg_src = None if own_dim else _source_hint([os.path.basename(rel)])
         inner_dims = _package_dims(inner) if not own_dim else {}
         if len(inner_dims) > 1:
-            for dim, names in sorted(inner_dims.items()):
+            for (dim, tag), names in sorted(inner_dims.items(),
+                                            key=lambda kv: (kv[0][0], kv[0][1] or "")):
                 units.append({"dimension": dim, "variant": _variant(rel),
                               "card_index": None, "set_index": _set_index(rel),
+                              "file_tag": tag,
                               "type": _asset_type(names), "packaged": True,
                               "package": os.path.basename(rel), "package_source": pkg_src,
-                              "source_path": f"{orig}/{dim}", "n_files": len(names)})
+                              "source_path": f"{orig}/{tag or dim}", "n_files": len(names)})
             continue
         # JEDEN baner w zipie — celowo BEZ pól `package`: nazwa takiego zipa niesie
         # wymiar (`160x600_gdn 1.zip`, `500x400.zip`), a nie źródło, więc wyciąganie
@@ -305,21 +340,25 @@ def _parse_units(zf):
             continue
         base = os.path.basename(rel)
         dim = _dim(base) or _dim(_top_folder(rel) or "") or _dim(rel)
-        key = (dim, _variant(rel), _card_index(base), _set_index(rel))
+        key = (dim, _variant(rel), _card_index(base), _set_index(rel),
+               _file_tag(base, dim))
         groups.setdefault(key, {"orig": orig, "names": []})["names"].append(rel)
 
-    for (dim, variant, card, sset), g in groups.items():
+    for (dim, variant, card, sset, tag), g in groups.items():
         units.append({"dimension": dim, "variant": variant, "card_index": card,
-                      "set_index": sset, "type": _asset_type(g["names"]),
-                      "packaged": False,
+                      "set_index": sset, "file_tag": tag,
+                      "type": _asset_type(g["names"]), "packaged": False,
                       "source_path": os.path.dirname(g["orig"]) or "/",
                       "n_files": len(g["names"])})
 
-    # Dedup: if a packaged .zip exists for (dim,variant,set), drop the unpacked folder dup
-    packaged = {(u["dimension"], u["variant"], u.get("set_index"))
+    # Dedup: if a packaged .zip exists for (dim,variant,set), drop the unpacked folder dup.
+    # `file_tag` jest w kluczu, więc wariant tego samego wymiaru (`1080x1080-a`) NIE jest
+    # uznawany za rozpakowaną kopię paczki `1080x1080.zip` i przeżywa.
+    packaged = {(u["dimension"], u["variant"], u.get("set_index"), u.get("file_tag"))
                 for u in units if u["packaged"]}
     units = [u for u in units if u["packaged"]
-             or (u["dimension"], u["variant"], u.get("set_index")) not in packaged]
+             or (u["dimension"], u["variant"], u.get("set_index"),
+                 u.get("file_tag")) not in packaged]
 
     # Drop noise: dimensionless html/other wrappers (preview.html, folder roots)
     dropped = [u["source_path"] for u in units

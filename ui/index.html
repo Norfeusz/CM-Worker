@@ -700,10 +700,30 @@
 
     // Choose the campaign to build on: an existing one, or a brand-new one by name.
     // Used both when nothing matched the link and when swapping the matched campaign.
-    function CampaignPicker({ pathHint, currentId, busy, onPickExisting, onCreateNew }) {
+    function CampaignPicker({ pathHint, currentId, busy, candidates, onPickExisting, onCreateNew }) {
       const [name, setName] = useState(pathHint || '');
+      // Kampanie, które COŚ dzielą ze ścieżką, ale za mało na automatyczny wybór
+      // (jeden wspólny człon przy dłuższej ścieżce). Bez tej listy podniesienie progu
+      // byłoby dla usera czystym pogorszeniem: kampania, którą narzędzie dotąd
+      // wybierało samo, tonęłaby wśród wszystkich pozostałych w przeglądarce niżej.
+      const near = (candidates || []).filter(c => c.common || c.near);
       return (
         <div>
+          {near.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div className="lead" style={{ fontSize: 13 }}>Najbliższe istniejące kampanie</div>
+              {near.map(c => (
+                <div key={c.campaignId} className="row" style={{ alignItems: 'center', gap: 8 }}>
+                  <button className="btn" disabled={busy}
+                    onClick={() => onPickExisting(c.campaignId)}>Użyj tej kampanii</button>
+                  <div style={{ flex: 1 }}>
+                    <b>{c.campaignName}</b>
+                    <div className="hint">{c.why}{c.lpName ? ` · po LP ${c.lpName}` : ''}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input type="text" value={name} onChange={e => setName(e.target.value)}
               placeholder="nazwa nowej kampanii" style={{ flex: 1 }} />
@@ -1085,6 +1105,7 @@
                   nazwij nową kampanię i zbuduj propozycję na niej.
                 </div>
                 <CampaignPicker pathHint={suggestData.pathHint} busy={busy}
+                  candidates={suggestData.candidates}
                   onPickExisting={cid => runAnalyze({ campaignId: cid })}
                   onCreateNew={name => runAnalyze({ newCampaign: name })} />
               </div>
