@@ -152,15 +152,36 @@ Object model (validated against live data — treat as ground truth):
                               Programmatic->CG_Programmatic, Mailing->mailsales.pl)
   format      -> Placement   (always compatibility=DISPLAY, size=1x1; GDN->"Display";
                               Facebook->Link/Animacje/Karuzela/Posty; DemGen->Display+Karuzela)
-  dimension/variant -> Ad    (GDN: the dimension e.g. "300x250"; DemGen: the variant e.g.
-                              "demgen1" and the dimension is IGNORED; Facebook carousel:
-                              "{variant}_{dimension}_{card}")
+  dimension/variant -> Ad    (GDN: the dimension e.g. "300x250"; DemGen: the SET e.g.
+                              "kv1" and the dimension is IGNORED; Facebook: the file tag,
+                              see below)
   line (LP + audience) -> Creative  (e.g. "linia3", "linia4-slonce", "refinans-prospecting")
+
+AD NAMES COME FROM THE FILE NAME, not from the dimension alone. Verified against the
+client's own finished tag sheet, ad for ad:
+  * the ad name is the tail of the file name FROM THE DIMENSION onwards, with the product
+    prefix dropped: `1080x1080-a.png` -> "1080x1080-a";
+    `mBank-uniqa_META_nnw_1200x1200_karuzela-4.jpg` -> "1200x1200_karuzela-4".
+    Several files of ONE dimension are therefore several ads, not one — this is how
+    variants (`-a`, `-b`, `1080x1920a`…) and carousel cards stay apart.
+  * a SET suffix (`_kv1`) is appended when the campaign has several key visuals, but ONLY
+    if the name does not already carry it: `1080x1080-kv1.mp4` stays "1080x1080-kv1",
+    never "1080x1080-kv1_kv1". Set labels are lowercase.
+  * the FILE TYPE can decide the placement when one folder mixes formats: for Facebook/Meta
+    `.mp4` goes to placement "Video" and stills to "Display". This applies only when the
+    materials actually mix types — a uniform package keeps the placement it already has.
 
 Hard rules:
   * ONE TAG = ONE TRIPLE (Placement x Ad x Creative). A single Ad may carry MANY creatives.
   * Ad and Placement names come from the zip structure + the source convention.
   * Lines and audiences come from the ORDER MESSAGE, never from the zip.
+  * The ORDER MESSAGE can also carry FORMATS, and then they are as real as the zip:
+    "LP wp.pl (tu będą potrzebne kody pod formaty 970x200, 970x300, … i native ad)" means
+    that source gets one ad per listed format even though it has NO package at all. The
+    formats belong to the source named in the SAME fragment; with several sources in the
+    order and no source named, do not guess — leave it to the human.
+  * A SET the package cannot name may be given in the message ("materiały z _kv2
+    analogicznie do pozostałych"). A package whose own name carries a set wins over that.
   * A line number is tied to the destination PATH within a campaign: same path => same line.
   * NEVER invent a line number. If the tool already resolved one (it is in the proposal),
     build on it; a new number is only for a path that has none.
