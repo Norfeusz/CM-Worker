@@ -70,12 +70,12 @@ po poprawce).
 **Nie stawiaj `serve.py` jako swojego zadania w tle** — trzy razy padł, bo jego czas życia
 jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkownika o dwuklik na
 `start.bat`; własny proces stawiaj tylko na czas konkretnej weryfikacji.
-Testy offline (OSIEM plików): `py tests/test_matcher.py`, `test_proposal.py`,
+Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
-`test_parse_zip.py`, `test_guard.py`
-(**576/576 zielone na 15.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+`test_parse_zip.py`, `test_guard.py`, `test_promote.py`
+(**603/603 zielone na 15.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
 że nic się nie popsuło). Rozkład: matcher 94, proposal 185, orchestrate 55, create_site 15,
-ai_agents 104, export_tags 23, parse_zip 61, guard 39.
+ai_agents 104, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
 (`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
@@ -791,6 +791,45 @@ Nadal otwarte: `parse_zip` tworzy dla folderów HTML **równolegle** jednostki `
 format bierzemy z nazwy folderu i jednostki zwijają się do tego samego ada. Zaboli, gdyby
 ktoś liczył jednostki albo brał typ z reprezentanta ada.
 
+## PROMOCJA decyzji AI do configu (15.09.2026) — `scripts/promote.py`
+
+Bez tego AI jest kosztem **stałym**: każde zlecenie z folderem `Screening/` znów pyta model
+o to samo, mimo że człowiek raz już odpowiedział. Promocja zamienia jednorazową odpowiedź
+w deterministyczną regułę i od tego momentu ścieżka AI się dla niej nie uruchamia.
+
+**Promowalne są TYLKO dwie rzeczy** — reszta wyjścia roli (a) jest z natury jednorazowa:
+* `group_mappings` → `source_map.json` (folder/źródło ma trwały Site, placement, adKey),
+* `advertiser_guess` → `advertiser_map.json` (wymaga też `advertiserId`; sama nazwa nie wystarcza).
+`ad_naming`, `lines`, `resolved_questions` dotyczą TEGO zlecenia — w configu zostałyby na
+zawsze i psuły kolejne paczki (prompt roli (a) zakazuje zresztą pustego `folder` właśnie dlatego).
+
+Czego promocja **nie zrobi** — bo reguła w configu działa potem bez nadzoru, na wszystkich
+kolejnych zleceniach, więc kosztuje więcej niż zła odpowiedź w jednym drzewie:
+* nie zapisze niczego poniżej `MIN_CONFIDENCE = 0.8` (próg wyżej niż przy zwykłym stosowaniu),
+* nie podmieni Site istniejącego źródła — to `kind: "conflict"`, pokazany i zablokowany;
+  dla istniejącego źródła promujemy wyłącznie BRAKUJĄCY format,
+* nie zapisze wpisu bez Site ani z nieznanym `adKey`,
+* zablokowanej zmiany nie zastosuje, **nawet gdy klient ją zatwierdzi** — blokada wynika
+  z danych, nie z opinii; `/api/promote` liczy diff PO SWOJEMU i nie ufa temu, co przyszło
+  z przeglądarki (inaczej dałoby się wpisać do configu cokolwiek, omijając progi).
+
+Każdy wpis dostaje proweniencję `_source: "ai"`, `_addedAt`, `_reason`, `_confidence` — bez
+niej nie da się odróżnić reguły napisanej przez człowieka od tej, którą dopisał model, ani
+jej sensownie cofnąć. `save()` zostawia obok kopię `.bak`.
+
+Podział jak wszędzie: **model proponuje, człowiek zatwierdza, kod stosuje.** `changes()`
+i `apply_changes()` są czyste (bez plików i sieci), więc testowalne wprost; `save()` to
+jedyna funkcja dotykająca dysku. `POST /api/promote` jest dwustopniowy — bez `apply` zwraca
+sam diff, z `apply: true` zapisuje zaznaczone (`approve: [path]`). W UI panel wisi pod
+podpowiedziami agenta, z checkboxami i wyszarzonymi pozycjami zablokowanymi.
+
+**Znany efekt uboczny**: zapis przez `json.dump(indent=2)` przeformatowuje `source_map.json`
+z ręcznie utrzymywanego zwartego układu (jedna linia na źródło) na rozwlekły. Jednorazowo,
+ale robi duży diff — do rozważenia przy pierwszym realnym użyciu.
+
+**Reguły zaczynają działać po restarcie serwera** (moduły siedzą w pamięci procesu) — UI o tym
+mówi po zapisie.
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
@@ -829,8 +868,8 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    decyzje AI muszą wracać do configu (`source_map.json`, `advertiser_map.json`), żeby
    analogiczny przypadek nie wymagał AI drugi raz. Zaprojektowane jako `scripts/promote.py`
    + `POST /api/promote` (diff → zatwierdzenie → zapis, z proweniencją `_source: "ai"`),
-   **jeszcze nie napisane** — to następny krok i bez niego AI jest kosztem stałym, nie
-   jednorazowym.
+   **ZROBIONE 15.09.2026** — `scripts/promote.py` + `POST /api/promote` + panel w UI,
+   27 testów. Patrz sekcja „PROMOCJA decyzji AI do configu".
 5. **n8n — POSTAWIONE po stronie użytkownika** (serwer firmowy). Workflow do importu i
    instrukcja: `n8n/`. `docs/n8n-ai-architecture.md` jest w tym punkcie **nieaktualny** —
    przewidywał `Front → n8n → Python`, a realnie jest odwrotnie (patrz niżej).
@@ -878,8 +917,8 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
 
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
-1. `py tests/test_matcher.py` … i pozostałe **siedem** plików (lista wyżej).
-   **Musi być 576/576.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
+   **Musi być 603/603.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest

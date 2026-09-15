@@ -461,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/apply-suggestions":
                 return self._send(200, json.dumps(self._apply_suggestions(req),
                                                   ensure_ascii=False))
+            if route == "/api/promote":
+                return self._send(200, json.dumps(self._promote(req), ensure_ascii=False))
             if route == "/api/commit":
                 return self._send(200, json.dumps(self._commit(req), ensure_ascii=False))
             if route == "/api/create-site":
@@ -522,6 +524,38 @@ class Handler(BaseHTTPRequestHandler):
             out["siteId"] = r.get("id")
             out["createdDirectorySite"] = r.get("_createdDirectorySite", False)
         return out
+
+    def _promote(self, req):
+        """Zatwierdzone decyzje AI -> trwałe reguły w configu.
+
+        Dwustopniowo, jak tworzenie Site: bez `apply` zwracamy sam DIFF do obejrzenia,
+        dopiero `apply: true` zapisuje (z kopią `.bak`). Powód jest ten sam co przy
+        zapisach do CM360 — config działa potem bez nadzoru, na wszystkich kolejnych
+        zleceniach, więc nie ma tu miejsca na „kliknąłem i się zapisało”.
+
+        Zmiany do zapisu bierzemy z WŁASNEGO wyliczenia na podstawie sugestii, nie z tego,
+        co przyśle klient: inaczej przeglądarka mogłaby wpisać do configu cokolwiek,
+        omijając progi pewności i blokady.
+        """
+        import promote
+        suggestions = req.get("suggestions") or {}
+        adv_id = (req.get("proposal") or {}).get("account", {}).get("advertiserId")
+        src_map, adv_map = promote.load()
+        diff = promote.changes(suggestions, src_map, adv_map, advertiser_id=adv_id)
+        if not req.get("apply"):
+            return {"changes": diff, "applied": False,
+                    "note": "podgląd — nic nie zapisano"}
+        approve = set(req.get("approve") or [])
+        chosen = [c for c in diff if not c.get("blocked")
+                  and (not approve or c["path"] in approve)]
+        if not chosen:
+            return {"changes": diff, "applied": False,
+                    "note": "nie ma czego zapisać (nic nie zatwierdzono albo wszystko zablokowane)"}
+        new_src, new_adv, log = promote.apply_changes(chosen, src_map, adv_map)
+        written = promote.save(new_src, new_adv)
+        return {"changes": diff, "applied": True, "log": log,
+                "files": [os.path.basename(w) for w in written],
+                "note": "zapisano; kopie poprzednich wersji leżą obok jako .bak"}
 
     def _commit(self, req):
         """Run the orchestrator on the (effective) proposal. dryRun=True -> read-only

@@ -497,7 +497,9 @@
             ))}
           </div>}
           {!struct && <div className="hint">{busy ? 'Czytam kampanię z CM360…' : 'Brak danych — kliknij „odśwież".'}</div>}
-          {struct && !pls.length && <div className="hint">
+          {struct && struct.error && <div className="hint" style={{ color: 'var(--warn)' }}>
+            Nie udało się odczytać struktury z CM360: {struct.error}</div>}
+          {struct && !struct.error && !pls.length && <div className="hint">
             Na Site <b>{site}</b> ta kampania nie ma jeszcze żadnego placementu — to zlecenie
             będzie pierwsze.</div>}
           {pls.map(pl => {
@@ -1293,7 +1295,13 @@
         if (!(np && np.campaign && np.campaign.id && site)) { setSiteStruct(null); return; }
         setStructBusy(true);
         fetch(`/api/site-structure?campaignId=${encodeURIComponent(np.campaign.id)}&site=${encodeURIComponent(site)}`)
-          .then(r => r.json()).then(setSiteStruct).catch(() => {})
+          // Odpowiedź błędu ma kształt `{error}`, nie `{placements}` — bez tego widok
+          // struktury sięgał po `.placements.filter` na undefined i wywracał cały render
+          // zamiast pokazać, że odczyt się nie udał (CM potrafi zwrócić 500 np. dla
+          // kampanii, której już nie ma).
+          .then(r => r.json())
+          .then(d => setSiteStruct(d && d.placements ? d : { placements: [], error: (d || {}).error }))
+          .catch(() => setSiteStruct({ placements: [], error: 'nie udało się odczytać struktury' }))
           .then(() => setStructBusy(false));
       }
       // `undoable`: podmiana struktury, którą da się cofnąć (wynik agenta, przebudowa po
@@ -1318,6 +1326,7 @@
       const [aiNote, setAiNote] = useState('');
       const [aiResult, setAiResult] = useState(null);   // diff operacji od agenta (b)
       const [assistRes, setAssistRes] = useState(null); // podpowiedzi agenta (a)
+      const [promo, setPromo] = useState(null);         // diff promocji do configu
       const [commitRes, setCommitRes] = useState(null);
 
       // Nazwa ostatnio wygenerowanego arkusza tagów. Trzymana OSOBNO od commitRes, żeby
@@ -1589,6 +1598,48 @@
         });
       }
 
+      // PROMOCJA do configu — osobno od stosowania sugestii do drzewa, bo to inna
+      // kategoria decyzji: drzewo dotyczy JEDNEGO zlecenia i da się cofnąć, a reguła
+      // w configu działa potem bez nadzoru na wszystkich kolejnych. Dlatego dwa kroki:
+      // najpierw podgląd diffu, dopiero potem zapis tego, co user zaznaczy.
+      async function promotePreview() {
+        setAiNote('');
+        await runBusy('Sprawdzam, co da się zapisać w konfiguracji',
+                      'porównuję sugestie z regułami, które już są', async () => {
+          try {
+            const resp = await fetch('/api/promote', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ proposal: p, suggestions: assistRes }),
+            });
+            const d = await resp.json();
+            if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+            const free = (d.changes || []).filter(c => !c.blocked);
+            setPromo({ ...d, approve: free.map(c => c.path) });
+            setAiNote(free.length ? '' : 'Nic z tych sugestii nie nadaje się do konfiguracji');
+          } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        });
+      }
+
+      async function promoteApply() {
+        await runBusy('Zapisuję reguły w konfiguracji',
+                      'kopia poprzedniej wersji zostaje obok jako .bak', async () => {
+          try {
+            const resp = await fetch('/api/promote', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ proposal: p, suggestions: assistRes,
+                                     apply: true, approve: promo.approve }),
+            });
+            const d = await resp.json();
+            if (d.error) { setAiNote('Błąd: ' + d.error); return; }
+            setPromo(d);
+            setAiNote(d.applied
+              ? `Zapisano do konfiguracji ✓ (${(d.files || []).join(', ')}) — `
+                + 'restart serwera, żeby reguły zaczęły działać'
+              : d.note || 'nic nie zapisano');
+          } catch (e) { setAiNote('Błąd (uruchom przez serve.py): ' + e); }
+        });
+      }
+
       async function doCommit(dryRun) {
         setCommitRes({ busy: true, dryRun });
         await runBusy(dryRun ? 'Sprawdzam plan zapisu' : 'Zapisuję w CM360',
@@ -1778,6 +1829,50 @@
                       <span className="hint" style={{ marginLeft: 10 }}>
                         nie podpięte — ustaw <code>N8N_STRUCTURE_URL</code></span>}
                   </div>
+                  {promo && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+                      <div className="lead" style={{ fontSize: 13 }}>
+                        ⚙️ Reguły do zapisania w konfiguracji
+                      </div>
+                      <div className="hint" style={{ marginBottom: 6 }}>
+                        To zostaje NA STAŁE i działa na wszystkich kolejnych zleceniach —
+                        inaczej niż zmiany w drzewie, których nie trzeba zatwierdzać dwa razy.
+                      </div>
+                      {(promo.changes || []).length === 0 &&
+                        <div className="hint">Nic z tych sugestii nie nadaje się do konfiguracji.</div>}
+                      {(promo.changes || []).map((c, i) => (
+                        <div key={i} style={{ padding: '3px 0', opacity: c.blocked ? .6 : 1 }}>
+                          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                            <input type="checkbox" disabled={!!c.blocked || promo.applied}
+                              checked={!c.blocked && (promo.approve || []).includes(c.path)}
+                              onChange={e => setPromo(pr => ({ ...pr,
+                                approve: e.target.checked
+                                  ? [...(pr.approve || []), c.path]
+                                  : (pr.approve || []).filter(x => x !== c.path) }))} />
+                            <span>
+                              {c.blocked ? '🚫 ' : ''}<b>{c.label}</b>
+                              <div className="hint">
+                                {c.blocked ? c.blocked : `${c.path} · pewność ${c.confidence}`}
+                              </div>
+                            </span>
+                          </label>
+                        </div>
+                      ))}
+                      {!promo.applied && (promo.changes || []).some(c => !c.blocked) && (
+                        <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <button className="btn primary" disabled={!!pending || !(promo.approve || []).length}
+                            onClick={promoteApply}>💾 Zapisz zaznaczone reguły</button>
+                          <span className="hint">kopia poprzedniej wersji zostanie obok jako .bak</span>
+                        </div>
+                      )}
+                      {promo.applied && (
+                        <div className="hint" style={{ marginTop: 8 }}>
+                          ✓ Zapisano: {(promo.files || []).join(', ')}. Reguły zaczną działać
+                          po restarcie serwera.
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1807,7 +1902,11 @@
                   <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button className="btn primary" disabled={!!pending}
                       onClick={applySuggestions}>✓ Zastosuj sugestie</button>
-                    <button className="btn mini" onClick={() => setAssistRes(null)}>Zamknij</button>
+                    <button className="btn" disabled={!!pending}
+                      onClick={promotePreview}
+                      title="Zapisz mapowania folderów jako TRWAŁE reguły, żeby ten sam przypadek nie wymagał agenta drugi raz">
+                      ⚙️ Zapisz w konfiguracji…</button>
+                    <button className="btn mini" onClick={() => { setAssistRes(null); setPromo(null); }}>Zamknij</button>
                     <span className="hint">
                       Zastosuje nazwy linii i landing page. Nazwy adów i mapowania folderów
                       zostaną pominięte — powie o tym raport poniżej.
