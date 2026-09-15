@@ -261,5 +261,91 @@ check("ad 300x250 na drugim Site to CREATE, mimo że ta nazwa istnieje na CG_GDN
 check("...i klika w LP swojego źródła",
       "linia2-Programmatic" in ad_ms[-1]["detail"], True)
 
+print("\nGAŁĄŹ SERWUJĄCA (programmatic): upload -> kreacja DISPLAY -> placement -> ad:")
+# paczka budowana w locie, żeby test nie zależał od plików klienta
+import io as _io, tempfile as _tf, zipfile as _zf
+_zp = os.path.join(_tf.mkdtemp(), "prog.zip")
+with _zf.ZipFile(_zp, "w") as z:
+    for d in ("300x250", "970x250"):
+        z.writestr(f"{d}/index.html", "<html></html>")
+        z.writestr(f"{d}/img.png", b"x")
+
+
+def _srv_cr(dim, **kw):
+    return {"name": dim, "type": "html5", "packaged": False,
+            "source_path": dim, "status": "new",
+            "unit": {"dimension": dim, "source_path": dim, "package": None, "_zip": _zp},
+            **kw}
+
+
+SRV_CAMP = {"id": "C9", "name": "prog", "status": "existing",
+            "startDate": "2026-08-01", "endDate": "2026-12-31",
+            "defaultLandingPageId": "OLD_DEFAULT"}
+SRV_PLACEMENT = {
+    "name": "prog_kv1_11.08.2026-prospecting", "serving": True, "site": "CG_Programmatic",
+    "sizes": ["300x250", "970x250"], "size": "300x250",
+    "ads": [{"name": "Display", "creatives": [
+        _srv_cr("300x250", lpName="linia1-programmatic-prospecting",
+                lpUrl="https://x?a=p"),
+        _srv_cr("970x250", lpName="linia1-programmatic-prospecting",
+                lpUrl="https://x?a=p")]}]}
+SRV_FULL = {"site": {"name": "CG_Programmatic"},
+            "line": {"lpName": "linia1-programmatic-default", "url": "https://x?a=d"},
+            "placements": [SRV_PLACEMENT]}
+srv_state = {"sites_by_name": {"CG_Programmatic": "S1"}, "placements": {}, "ads": {},
+             "ad_creatives": {}, "creatives_by_name": {},
+             "lps_by_name": {}, "adv_lp_by_name_url": {}}
+osrv = Orchestrator(svc=None, profile_id="P", advertiser_id="A", campaign=SRV_CAMP,
+                    dry_run=True)
+lsrv = osrv.run(SRV_FULL, srv_state)
+acts = [(e["action"], e["kind"], e["name"]) for e in lsrv]
+check("każdy wymiar dostaje wgrany materiał",
+      [e["name"] for e in lsrv if e["kind"] == "asset"], ["300x250.zip", "970x250.zip"])
+check("...i własną kreację serwowaną",
+      [(e["action"], e["name"]) for e in lsrv if e["kind"] == "creative"],
+      [("CREATE", "300x250"), ("CREATE", "970x250")])
+check("kreacja serwująca to DISPLAY z assetem, nie szablon 1x1",
+      all("DISPLAY + asset" in e["detail"] for e in lsrv if e["kind"] == "creative"), True)
+check("placement deklaruje WSZYSTKIE wymiary",
+      next(e["detail"] for e in lsrv if e["kind"] == "placement"),
+      "site=CG_Programmatic, wymiary: 2")
+check("JEDEN ad standardowy ze wszystkimi kreacjami",
+      [(e["action"], e["name"], e["detail"]) for e in lsrv if e["kind"] == "ad"],
+      [("CREATE", "Display",
+        "AD_SERVING_STANDARD_AD, 2 kreacji -> LP linia1-programmatic-prospecting")])
+# LP `-default` musi zostać defaultem kampanii — z niego CM bierze adres dla adów
+# `{wymiar} Default Web Ad`, których w naszym drzewie nie ma
+check("LP -default zostaje domyślną stroną kampanii, mimo że kampania już miała inną",
+      next(e["detail"] for e in lsrv if e["kind"] == "campaign-LP"),
+      "jako default kampanii (programmatic)")
+check("kolejność: asset przed kreacją, kreacja przed adem",
+      [i for i, a in enumerate(acts) if a[1] in ("asset", "creative", "ad")] ==
+      sorted(i for i, a in enumerate(acts) if a[1] in ("asset", "creative", "ad")), True)
+# brak materiału nie może po cichu dać pustej kreacji
+NOMAT = {**SRV_FULL, "placements": [{**SRV_PLACEMENT, "ads": [{"name": "Display",
+         "creatives": [_srv_cr("111x111", **{"unit": {"dimension": "111x111",
+                       "source_path": "nie-ma", "package": None, "_zip": _zp}})]}]}]}
+lno = Orchestrator(svc=None, profile_id="P", advertiser_id="A", campaign=SRV_CAMP,
+                   dry_run=True).run(NOMAT, dict(srv_state))
+check("brak materiału -> SKIP z powodem, nie pusta kreacja",
+      [(e["action"], e["kind"]) for e in lno if e["action"] == "SKIP"],
+      [("SKIP", "creative"), ("SKIP", "ad")])
+
+print("\nPLACEMENT SERWUJĄCY bez writera — musi być odrzucony PRZED zapisem:")
+# `run()` czyta tylko name/ads/creatives, więc taki placement zapisałby się jako zwykły
+# tracking 1x1 i wyszłoby to dopiero w CM360. Do usunięcia razem z writerem (Etap 2).
+SRV_PROP = {"placements": [
+    {"name": "kampania_kv1_11.08.2026-prospecting", "serving": True,
+     "sizes": ["300x250", "970x250"], "ads": [{"name": "Display", "creatives": []}]},
+    {"name": "Display", "ads": [{"name": "300x250", "creatives": []}]}]}
+check("wykrywa placement serwujący po fladze, nie po nazwie",
+      Orchestrator.serving_names(SRV_PROP),
+      ["kampania_kv1_11.08.2026-prospecting"])
+check("zwykła propozycja trackingowa przechodzi",
+      Orchestrator.serving_names({"placements": [
+          {"name": "Display", "ads": []}]}), [])
+check("pusta propozycja nie wysypuje sprawdzenia",
+      Orchestrator.serving_names({}), [])
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

@@ -642,9 +642,15 @@ def serving_placements(units, conf, campaign, line_nodes, line_label, existing,
             name = pattern.format(campaign=_camp_token(campaign.get("name")), line=label,
                                   date=date_s, audience=aud)
             ex_plc = ((existing or {}).get(site, {})).get(name)
+            # Kreacja serwująca niesie MATERIAŁ, więc węzeł musi wystarczyć writerowi do
+            # wyjęcia go z paczki (`repack.unit_asset`): ścieżka w zipie, plik zlecenia
+            # i to, czy jednostka pochodzi z zagnieżdżonej paczki. Bez tego orkiestrator
+            # miałby samą nazwę wymiaru i nie wiedziałby, co wgrać.
             creatives = [{"name": d, "type": by_set[sset][d].get("type"),
                           "packaged": by_set[sset][d].get("packaged", False),
                           "source_path": by_set[sset][d].get("source_path"),
+                          "unit": {k: by_set[sset][d].get(k) for k in
+                                   ("dimension", "source_path", "package", "_zip")},
                           "status": _status(d, set((ex_plc or {}).get(srv.get("adName")
                                                                      or "Display") or [])),
                           **({"lpName": ln["lpName"], "lpUrl": ln.get("url") or ""}

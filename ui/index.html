@@ -1912,6 +1912,16 @@
                   istniejącego LP) — CM360 nie przyjmuje LP bez adresu.
                 </div>
               )}
+              {commitRes.servingWarning && commitRes.servingWarning.length > 0 && (
+                <div style={{ margin: '8px 0', padding: '8px 11px', borderRadius: 8,
+                              background: 'var(--warn-bg)', color: 'var(--warn)',
+                              border: '1px solid var(--warn-line)', fontWeight: 600 }}>
+                  ⚠️ Placementy serwujące (programmatic) nie mają jeszcze writera:{' '}
+                  {commitRes.servingWarning.join(', ')}. Dry-run pokazuje plan, ale zapis
+                  zostanie odrzucony — bez writera trafiłyby do CM360 jako zwykły tracking
+                  1×1, bez wymiarów i bez materiałów.
+                </div>
+              )}
               {commitRes.busy && <div className="busy-inline"><span className="spinner big" />
                 <span>{commitRes.dryRun ? 'Sprawdzam plan zapisu' : 'Zapisuję w CM360'}…
                   <span className="sub"> to potrwa — czytam stan konta z API CM360</span></span></div>}

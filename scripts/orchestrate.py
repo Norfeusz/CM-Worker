@@ -62,6 +62,18 @@ class Orchestrator:
         return proposal["line"]["lpName"], proposal["line"]["url"] or ""
 
     @staticmethod
+    def serving_names(proposal):
+        """Nazwy placementów SERWUJĄCYCH (programmatic) w propozycji.
+
+        Używane w trzech miejscach: `run()` ustawia dla nich LP `-default` jako default
+        kampanii, `_run_serving()` je obsługuje, a `/api/commit` na razie ODMAWIA na nich
+        realnego zapisu — writer istnieje, ale nie przeszedł jeszcze ani jednego przebiegu
+        na żywym koncie, a pomyłka zostawia na nim nieusuwalne kreacje i assety.
+        """
+        return sorted({pl.get("name") for pl in proposal.get("placements") or []
+                       if pl.get("serving")})
+
+    @staticmethod
     def lp_urls_missing(proposal, state):
         """Landing pages the proposal wants to CREATE but gives no address for.
 
@@ -117,6 +129,76 @@ class Orchestrator:
                   f"{self.start_date}..{self.end_date}, default LP={default_lp_id}, "
                   f"brak treści politycznych")
 
+    def _run_serving(self, pl, site, site_ids, lp_ids, proposal, state):
+        """Placement, na którym CM SERWUJE kreacje (programmatic).
+
+        Inna kolejność niż tracking, bo kreacja nie istnieje bez materiału:
+          upload assetu -> kreacja DISPLAY -> powiązanie z kampanią -> placement
+          z listą wymiarów -> JEDEN ad `AD_SERVING_STANDARD_AD` ze wszystkimi kreacjami.
+
+        Adów `{wymiar} Default Web Ad` tu nie tworzymy — robi je CM sam po zadeklarowaniu
+        wymiarów na placemencie i bierze dla nich DOMYŚLNĄ stronę docelową kampanii
+        (ustawianą w `run()`).
+        """
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "parser"))
+        import repack
+
+        ad = (pl.get("ads") or [{}])[0]
+        cres = ad.get("creatives") or []
+        creative_ids = []
+        for cr in cres:
+            cname = cr["name"]
+            cid_ = state["creatives_by_name"].get(cname)
+            if cid_:
+                # REUSE po nazwie jak wszędzie, ale tu warto na to spojrzeć w dry-runie:
+                # kreacja serwująca niesie materiał, a nazwa (`300x250`) jest na tyle
+                # ogólna, że mogłaby trafić w cudzą.
+                self._rec("REUSE", "creative", cname, cid_, "serwująca — materiał BEZ zmian")
+            else:
+                try:
+                    fname, data = repack.unit_asset(cr.get("unit", {}).get("_zip"),
+                                                    cr.get("unit") or {})
+                except Exception as e:
+                    self._rec("SKIP", "creative", cname, None, f"brak materiału: {e}")
+                    continue
+                a = W.creative_asset(self.svc, self.pid, self.adv, fname, data,
+                                     dry_run=self.dry)
+                self._rec("UPLOAD", "asset", fname, None, f"{len(data)} B -> {cname}")
+                r = W.display_creative(self.svc, self.pid, self.adv, cname, cname,
+                                       a["assetIdentifier"], click_tags=a.get("clickTags"),
+                                       dry_run=self.dry)
+                cid_ = r.get("id", "(new)")
+                self._rec("CREATE", "creative", cname, r.get("id"), "DISPLAY + asset PRIMARY")
+            W.associate_creative_to_campaign(self.svc, self.pid, self.cid, cid_,
+                                             dry_run=self.dry)
+            self._rec("LINK", "campaign-creative", cname, cid_, f"-> campaign {self.cid}")
+            creative_ids.append(cid_)
+
+        p_id = state["placements"].get((site, pl["name"]))
+        if p_id:
+            self._rec("REUSE", "placement", pl["name"], p_id, f"site={site}")
+        else:
+            r = W.serving_placement(self.svc, self.pid, self.cid, site_ids[site],
+                                    pl["name"], pl.get("sizes") or [], self.start_date,
+                                    dry_run=self.dry)
+            p_id = r.get("id", "(new)")
+            self._rec("CREATE", "placement", pl["name"], r.get("id"),
+                      f"site={site}, wymiary: {len(pl.get('sizes') or [])}")
+
+        if not creative_ids:
+            self._rec("SKIP", "ad", ad.get("name") or "Display", None, "brak kreacji")
+            return
+        ad_key = (site, pl["name"], ad.get("name") or "Display")
+        if state["ads"].get(ad_key):
+            self._rec("NO-OP", "ad", ad_key[2], state["ads"][ad_key], "już istnieje")
+            return
+        lp_name, _ = self._lp_key(proposal, cres[0])
+        r = W.standard_ad(self.svc, self.pid, self.cid, ad_key[2], p_id, creative_ids,
+                          lp_ids.get(lp_name), self.start_time, self.end_time,
+                          dry_run=self.dry)
+        self._rec("CREATE", "ad", ad_key[2], r.get("id"),
+                  f"AD_SERVING_STANDARD_AD, {len(creative_ids)} kreacji -> LP {lp_name}")
+
     def run(self, proposal, state):
         head = (f"NEW CAMPAIGN '{self.campaign['name']}'" if self.is_new_campaign
                 else f"CAMPAIGN {self.cid} '{self.campaign['name']}'")
@@ -149,12 +231,20 @@ class Orchestrator:
         if self.is_new_campaign:
             self._create_campaign(line_lp_id)
             line_in_campaign = True
-        if not line_in_campaign:
+        # LP linii programmatica (`…-default`) MUSI zostać domyślną stroną kampanii:
+        # ady `{wymiar} Default Web Ad` tworzy sam CM po zadeklarowaniu wymiarów na
+        # placemencie i bierze dla nich właśnie default kampanii. Nie ma ich w naszym
+        # drzewie, więc bez tego kierowałyby w LP poprzedniego zlecenia.
+        needs_default = bool(self.serving_names(proposal))
+        if not line_in_campaign or needs_default:
             first_line = not self.campaign.get("defaultLandingPageId")
+            make_default = first_line or needs_default
             W.add_lp_to_campaign(self.svc, self.pid, self.cid, line_lp_id,
-                                 make_default=first_line, dry_run=self.dry)
+                                 make_default=make_default, dry_run=self.dry)
             self._rec("REGISTER", "campaign-LP", line_lp_name, line_lp_id,
-                      "as default (first line)" if first_line else "added to campaign list")
+                      "jako default kampanii (programmatic)" if needs_default
+                      else "as default (first line)" if first_line
+                      else "added to campaign list")
 
         # 1c) any per-creative LP overrides — never eligible to become the default
         for name, url in lp_wanted.items():
@@ -184,7 +274,11 @@ class Orchestrator:
         # 3) creatives: ensure EVERY distinct creative name used anywhere in the
         # proposal exists + is campaign-associated (an ad can carry several, e.g.
         # linia4-słońce + linia4-niebo on the same dimension).
+        # Kreacje placementów SERWUJĄCYCH pomijamy tutaj świadomie: to nie są szablony
+        # 1x1, tylko realne banery z wgranym materiałem — powstają w `_run_serving()`
+        # razem ze swoim assetem, bo bez niego kreacja nie ma sensu.
         all_names = sorted({cr["name"] for pl in proposal["placements"]
+                            if not pl.get("serving")
                             for a in pl["ads"] for cr in a["creatives"]})
         creative_ids = {}
         for cname in all_names:
@@ -202,6 +296,9 @@ class Orchestrator:
 
         # 4) placements + ads (+ each ad's creatives)
         for pl in proposal["placements"]:
+            if pl.get("serving"):
+                self._run_serving(pl, site_of(pl), site_ids, lp_ids, proposal, state)
+                continue
             site = site_of(pl)
             p_id = state["placements"].get((site, pl["name"]))
             if p_id:

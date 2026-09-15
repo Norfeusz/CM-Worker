@@ -8,6 +8,7 @@ Size ids (from live inspection): placement 1x1 = "31"; tracking creative = "255"
 """
 import datetime
 import json
+import os
 
 TRACKING_CREATIVE_SIZE = "255"   # 0x0 tracking size used by TRACKING_TEXT creatives
 PLACEMENT_1x1_SIZE = "31"        # 1x1
@@ -200,6 +201,153 @@ def tracking_ad(svc, profile_id, campaign_id, name, placement_id,
     }
     if dry_run:
         print(f"[DRY-RUN] ads.insert\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
+        return {"_dryRun": True, "payload": payload}
+    return svc.ads().insert(profileId=profile_id, body=payload).execute()
+
+
+# --- PROGRAMMATIC (źródło SERWUJĄCE) — CM realnie hostuje kreacje ------------
+# Inny model niż tracking: prawdziwy asset idzie na serwer CM, kreacja nazywa się
+# wymiarem, placement deklaruje listę wymiarów, a jeden ad `AD_SERVING_STANDARD_AD`
+# niesie wszystkie kreacje placementu. Kształty wzięte z discovery v5, nie z pamięci.
+
+# CreativeAssetId.type; z discovery: IMAGE / FLASH / VIDEO / HTML / HTML_IMAGE / AUDIO
+ASSET_TYPE_BY_EXT = {".zip": "HTML", ".html": "HTML", ".htm": "HTML",
+                     ".png": "IMAGE", ".jpg": "IMAGE", ".jpeg": "IMAGE", ".gif": "IMAGE",
+                     ".mp4": "VIDEO", ".mov": "VIDEO"}
+MIME_BY_EXT = {".zip": "application/zip", ".html": "text/html", ".htm": "text/html",
+               ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".gif": "image/gif", ".mp4": "video/mp4", ".mov": "video/quicktime"}
+SERVING_YEARS = 3                # placement serwujący: koniec = start + 3 lata
+
+
+def _ext(filename):
+    return os.path.splitext(filename or "")[1].lower()
+
+
+def asset_kind(filename):
+    """(CreativeAssetId.type, mime) dla pliku materiału."""
+    e = _ext(filename)
+    return ASSET_TYPE_BY_EXT.get(e, "IMAGE"), MIME_BY_EXT.get(e, "application/octet-stream")
+
+
+def size_of(dimension):
+    """`300x250` -> {"width": 300, "height": 250}. CM dopasuje albo utworzy wpis Size."""
+    w, _, h = (dimension or "").lower().partition("x")
+    return {"width": int(w), "height": int(h)}
+
+
+def creative_asset(svc, profile_id, advertiser_id, filename, data, dry_run=True):
+    """Wgraj JEDEN plik materiału i zwróć jego `assetIdentifier`.
+
+    Upload MUSI być nie-resumable: bezpiecznik `cm_auth` siedzi na `HttpRequest.execute`,
+    a upload resumable leci przez `next_chunk()` i ominąłby go. Discovery v5 zresztą
+    wystawia dla `creativeAssets.insert` **wyłącznie** protokół `simple` (limit 1 GB),
+    więc innej drogi i tak nie ma.
+
+    CM może zmienić nazwę assetu przy kolizji, dlatego identyfikator bierzemy z ODPOWIEDZI,
+    nigdy z tego, co wysłaliśmy.
+    """
+    atype, mime = asset_kind(filename)
+    meta = {"assetIdentifier": {"name": os.path.basename(filename), "type": atype}}
+    if dry_run:
+        print(f"[DRY-RUN] creativeAssets.insert {filename} ({atype}, {len(data or b'')} B)")
+        return {"_dryRun": True, "assetIdentifier": meta["assetIdentifier"]}
+    import io as _io
+    from googleapiclient.http import MediaIoBaseUpload
+    media = MediaIoBaseUpload(_io.BytesIO(data), mimetype=mime, resumable=False)
+    r = svc.creativeAssets().insert(profileId=profile_id, advertiserId=advertiser_id,
+                                    body=meta, media_body=media).execute()
+    return {"assetIdentifier": r.get("assetIdentifier") or meta["assetIdentifier"],
+            "clickTags": r.get("clickTags") or [], "raw": r}
+
+
+def display_creative(svc, profile_id, advertiser_id, name, dimension, asset_id,
+                     click_tags=None, backup_asset_id=None, dry_run=True):
+    """Kreacja SERWOWANA (HTML5/obraz) z wgranym assetem w roli PRIMARY.
+
+    `asset_id` to `assetIdentifier` zwrócony przez `creative_asset()`.
+    `click_tags` przepisujemy z odpowiedzi uploadu: CM wykrywa je w zipie HTML5 i bez
+    nich kreacja nie ma gdzie kliknąć.
+
+    OTWARTE do rozstrzygnięcia pierwszym realnym insertem (konto testowe nie ma ani
+    jednej kreacji HTML5): czy CM wymusza BACKUP_IMAGE przy zipie i czy dla HTML5 chce
+    typu `DISPLAY` czy `HTML5_BANNER`. Zostawiamy `DISPLAY` (nowszy) i opcjonalny backup.
+    """
+    assets = [{"assetIdentifier": asset_id, "role": "PRIMARY",
+               "windowMode": "TRANSPARENT", "active": True}]
+    if backup_asset_id:
+        assets.append({"assetIdentifier": backup_asset_id, "role": "BACKUP_IMAGE",
+                       "active": True})
+    payload = {"name": name, "advertiserId": advertiser_id, "type": "DISPLAY",
+               "size": size_of(dimension), "active": True, "creativeAssets": assets}
+    if click_tags:
+        payload["clickTags"] = click_tags
+    if backup_asset_id:
+        payload["backupImageReportingLabel"] = name
+    if dry_run:
+        print(f"[DRY-RUN] creatives.insert (DISPLAY)\n"
+              f"{json.dumps(payload, ensure_ascii=False, indent=2)}")
+        return {"_dryRun": True, "payload": payload}
+    return svc.creatives().insert(profileId=profile_id, body=payload).execute()
+
+
+def serving_placement(svc, profile_id, campaign_id, site_id, name, sizes,
+                      start_date, end_date=None, dry_run=True):
+    """Placement, na którym CM SERWUJE: deklaruje listę wymiarów, nie 1x1.
+
+    Pierwszy wymiar idzie w `size`, reszta w `additionalSizes` — to z nich CM tworzy
+    sobie ady `{wymiar} Default Web Ad` i bierze dla nich DOMYŚLNĄ stronę docelową
+    kampanii (dlatego LP audiencji `-default` musi zostać defaultem kampanii).
+    """
+    dims = list(sizes) or ["1x1"]
+    end_date = end_date or campaign_dates(start_date, SERVING_YEARS)[1]
+    payload = {
+        "name": name, "campaignId": campaign_id, "siteId": site_id,
+        "compatibility": "DISPLAY", "paymentSource": "PLACEMENT_AGENCY_PAID",
+        "size": size_of(dims[0]),
+        "additionalSizes": [size_of(d) for d in dims[1:]],
+        "tagFormats": ["PLACEMENT_TAG_STANDARD", "PLACEMENT_TAG_JAVASCRIPT",
+                       "PLACEMENT_TAG_IFRAME_JAVASCRIPT", "PLACEMENT_TAG_INTERNAL_REDIRECT"],
+        "pricingSchedule": {
+            "startDate": start_date, "endDate": end_date,
+            "pricingType": "PRICING_TYPE_CPM",
+            "pricingPeriods": [{"startDate": start_date, "endDate": end_date,
+                                "units": "0", "rateOrCostNanos": "0"}],
+        },
+    }
+    if dry_run:
+        print(f"[DRY-RUN] placements.insert (serwujący, {len(dims)} wymiarów)\n"
+              f"{json.dumps(payload, ensure_ascii=False, indent=2)}")
+        return {"_dryRun": True, "payload": payload}
+    return svc.placements().insert(profileId=profile_id, body=payload).execute()
+
+
+def standard_ad(svc, profile_id, campaign_id, name, placement_id, creative_ids,
+                landing_page_id, start_time, end_time, dry_run=True):
+    """Ad SERWUJĄCY (`AD_SERVING_STANDARD_AD`) ze WSZYSTKIMI kreacjami placementu.
+
+    Rotacja równa i losowa — przy jednej kreacji pole i tak nie szkodzi, a przy wielu
+    CM bez niego nie wie, jak je ważyć.
+    """
+    payload = {
+        "name": name, "campaignId": campaign_id, "type": "AD_SERVING_STANDARD_AD",
+        "active": True, "startTime": start_time, "endTime": end_time,
+        "placementAssignments": [{"placementId": placement_id, "active": True}],
+        "deliverySchedule": {"priority": "AD_PRIORITY_15", "impressionRatio": "1",
+                             "hardCutoff": False},
+        "creativeRotation": {
+            "type": "CREATIVE_ROTATION_TYPE_RANDOM",
+            "weightCalculationStrategy": "WEIGHT_STRATEGY_EQUAL",
+            "creativeAssignments": [{
+                "creativeId": cid, "active": True, "applyEventTags": True,
+                "clickThroughUrl": {"landingPageId": landing_page_id,
+                                    "defaultLandingPage": False},
+            } for cid in creative_ids],
+        },
+    }
+    if dry_run:
+        print(f"[DRY-RUN] ads.insert (serwujący, {len(creative_ids)} kreacji)\n"
+              f"{json.dumps(payload, ensure_ascii=False, indent=2)}")
         return {"_dryRun": True, "payload": payload}
     return svc.ads().insert(profileId=profile_id, body=payload).execute()
 

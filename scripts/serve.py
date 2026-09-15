@@ -513,6 +513,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
             state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+        # PLACEMENTY SERWUJĄCE: writer istnieje (upload assetu -> kreacja DISPLAY ->
+        # placement z wymiarami -> ad standardowy), ale NIE przeszedł jeszcze ani jednego
+        # przebiegu na żywym koncie. Dwie rzeczy rozstrzygnie dopiero pierwszy insert:
+        # czy CM wymusza BACKUP_IMAGE przy zipie HTML5 i czy chce typu DISPLAY czy
+        # HTML5_BANNER. Pomyłka zostawia na koncie nieusuwalne kreacje i assety, więc do
+        # czasu tego przebiegu odmawiamy realnego zapisu. Dry-run przechodzi — po to jest.
+        # ZDJĄĆ po udanym pierwszym zapisie jednego wymiaru (za zgodą użytkownika).
+        serving = Orchestrator.serving_names(proposal)
+        if serving and not dry:
+            return {"error": "Nie zapisuję: writer placementów serwujących (programmatic) "
+                             "nie był jeszcze uruchomiony na żywym koncie, a pomyłka "
+                             "zostawia tam nieusuwalne kreacje i assety. Obejrzyj dry-run; "
+                             "pierwszy realny zapis robimy świadomie, na jednym wymiarze. "
+                             f"Dotyczy: {', '.join(serving)}."}
         if not dry:
             # Sites must already exist before we write anything: site creation sits AFTER
             # the LP/campaign steps, so failing there would leave a half-written campaign.
@@ -541,6 +555,8 @@ class Handler(BaseHTTPRequestHandler):
             # w dry-runie tylko ostrzegamy, żeby użytkownik zobaczył problem PRZED
             # kliknięciem zapisu, a nie dopiero jako odmowę
             out["lpUrlWarning"] = sorted(no_url)
+        if serving:
+            out["servingWarning"] = serving
         if not dry:
             cid = orch.cid                 # a brand-new campaign only has an id now
             # recompute tags fresh from the (possibly user-edited) placements — the
