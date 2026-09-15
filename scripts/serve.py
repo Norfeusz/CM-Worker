@@ -25,7 +25,9 @@ import ai_fallback
 import ai_agents as AG
 from cm_auth import service
 from cm_read import fetch_state, search_sites, existing_tree, site_structure, _paginate
-from match_link import _fetch_campaign_lps, TEST_PROFILE, TEST_ADVERTISER, MAP_PATH
+import cm_env
+from match_link import (_fetch_campaign_lps, TEST_PROFILE, TEST_ADVERTISER,
+                        MAP_PATH, advertiser_for)
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui")
 
@@ -212,6 +214,14 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
         return {"error": "Linki wskazują różnych advertiserów — jedno zlecenie musi "
                          f"dotyczyć jednego. Nie pasuje do „{rule.get('advertiser')}”: "
                          + ", ".join(bad)}
+    # Advertiser, na którym realnie pracujemy. Na koncie testowym jest jeden i wygrywa
+    # zawsze (o to chodzi w trybie testowym: produkcyjne adresy mBanku przepuszczamy
+    # przez advertisera testowego). Na produkcji bierze go LINK — dlatego wszystko niżej
+    # używa `adv_id`, a nie stałej.
+    try:
+        adv_id = advertiser_for(rule)
+    except RuntimeError as e:
+        return {"error": str(e)}
     anchor = rule.get("anchor", [])
     svc = service(read_only=True)
     # `zip_path` przyjmuje albo jedną ścieżkę (jak dotąd), albo listę paczek zlecenia
@@ -239,7 +249,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
         # brand-new campaign: no campaign LPs yet, so these links are the first lines
         # and every placement/ad/creative below is new. Account-level sites still exist,
         # so pass them as an empty-placement tree to keep the Site badge honest.
-        state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER)
+        state = fetch_state(svc, TEST_PROFILE, adv_id)
         prop = B.build_proposal(source, parsed,
                                 {"id": None, "name": new_campaign, "status": "new"},
                                 lines=M.resolve_lines(ent_urls, anchor, lp_src, [],
@@ -248,9 +258,9 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                                 campaign_lps=[], target_url=link, message=message,
                                 folder_match=folder_match, sources=selected,
                                 line_addresses=addr_of, line_label=line_label)
-        return _attach_ai(prop, parsed, message, rules)
+        return _attach_ai(prop, parsed, message, rules, adv_id)
 
-    camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, TEST_ADVERTISER)
+    camp_lps = _fetch_campaign_lps(svc, TEST_PROFILE, adv_id)
     matched_by = None
     if campaign_id:
         # explicit override (user manually picked a campaign from the browse list)
@@ -290,9 +300,9 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
             lines=B.mailing_lines(parsed, B.source_conf(source), camp_node,
                                   start_no=M.next_mail_number(this),
                                   override=mail_links, main_url=link),
-            existing=existing_tree(fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)),
+            existing=existing_tree(fetch_state(svc, TEST_PROFILE, adv_id, cid)),
             campaign_lps=this, target_url=link, sources=selected, message=message)
-        return _attach_ai(prop, parsed, message, rules)
+        return _attach_ai(prop, parsed, message, rules, adv_id)
     lines = M.resolve_lines(ent_urls, anchor, lp_src, this, ent_labels, ent_kw, ent_src)
     # the reuse-vs-new-line question is per landing page AND per source (the source is
     # part of the LP name, so `linia2-GDN` and `linia2-Programmatic` collide separately)
@@ -300,7 +310,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                                  for j, u in enumerate(ent_urls)) if c["conflict"]),
                     {"conflict": False})
     campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
-    state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+    state = fetch_state(svc, TEST_PROFILE, adv_id, cid)
     prop = B.build_proposal(source, parsed,
                             {"id": cid, "name": campaign["name"], "status": "existing",
                              "matchedBy": matched_by},
@@ -309,11 +319,16 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
                             folder_match=folder_match, sources=selected,
                             line_addresses=addr_of, line_label=line_label,
                             message=message)
-    return _attach_ai(prop, parsed, message, rules)
+    return _attach_ai(prop, parsed, message, rules, adv_id)
 
 
-def _attach_ai(proposal, parsed, message, rules):
+def _attach_ai(proposal, parsed, message, rules, advertiser_id=None):
     """Attach the escalation points and the ready-made agent (a) request.
+
+    Dokłada też KONTO, którego ta propozycja dotyczy (`advertiserId` + `env`). Bez tego
+    `/api/commit` musiałby zgadywać, do kogo pisać — na koncie testowym advertiser jest
+    jeden, ale na produkcji wybiera go link, a propozycja jedzie do przeglądarki i wraca,
+    więc musi nieść tę informację ze sobą.
 
     Carrying the request in the proposal means /api/assist needs no re-upload and no
     re-parse of the zip — the client just hands back what it already has. Escalations
@@ -321,6 +336,7 @@ def _attach_ai(proposal, parsed, message, rules):
     model is needed for this order.
     """
     advertisers = sorted({r.get("advertiser") for r in rules if r.get("advertiser")})
+    proposal["account"] = dict(cm_env.describe(), advertiserId=advertiser_id)
     proposal["ai"] = {
         "escalations": ai_fallback.escalations(parsed, proposal, message),
         "request": ai_fallback.build_request(parsed, proposal, message, advertisers),
@@ -357,19 +373,34 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             cid = (qs.get("campaignId") or [""])[0]
             site = (qs.get("site") or [""])[0]
+            # advertiser podaje klient (z propozycji); na koncie testowym jest jeden,
+            # więc stała zostaje fallbackiem i stare wywołania działają bez zmian
+            adv = (qs.get("advertiserId") or [""])[0] or TEST_ADVERTISER
             if not cid or not site:
                 return self._send(400, json.dumps({"error": "wymagane: campaignId, site"}))
+            if not adv:
+                return self._send(400, json.dumps({"error": "wymagane: advertiserId "
+                                                            "(na produkcji nie ma domyslnego)"}))
             try:
                 svc = service(read_only=True)
-                state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+                state = fetch_state(svc, TEST_PROFILE, adv, cid)
                 return self._send(200, json.dumps(site_structure(state, site), ensure_ascii=False))
             except Exception as e:
                 return self._send(500, json.dumps({"error": friendly_error(e)}, ensure_ascii=False))
+        if route == "/api/env":
+            # Które konto jest pod spodem — UI musi to pokazać ZANIM user cokolwiek
+            # kliknie. Bez sieci i bez tokenu: to czysty odczyt configu.
+            return self._send(200, json.dumps(cm_env.describe(), ensure_ascii=False))
         if route == "/api/campaigns":
             try:
                 svc = service(read_only=True)
+                from urllib.parse import urlparse as _u, parse_qs as _q
+                adv = (_q(_u(self.path).query).get("advertiserId") or [""])[0] or TEST_ADVERTISER
+                if not adv:
+                    return self._send(400, json.dumps(
+                        {"error": "wymagane: advertiserId (na produkcji nie ma domyslnego)"}))
                 camps = _paginate(svc.campaigns, "campaigns", profileId=TEST_PROFILE,
-                                  advertiserIds=[TEST_ADVERTISER], sortField="NAME")
+                                  advertiserIds=[adv], sortField="NAME")
                 out = [{"id": c["id"], "name": c["name"]} for c in camps]
                 return self._send(200, json.dumps({"campaigns": out}, ensure_ascii=False))
             except Exception as e:
@@ -506,13 +537,20 @@ class Handler(BaseHTTPRequestHandler):
             return {"error": "Brak campaign.id — najpierw zbuduj propozycję."}
         if is_new and not (camp_spec.get("name") or "").strip():
             return {"error": "Nowa kampania wymaga nazwy."}
+        # Advertiser jedzie w propozycji (`account.advertiserId`) — to jedyne miejsce,
+        # ktore wie, z jakiego LINKU powstala. Stala zostaje fallbackiem dla konta
+        # testowego i dla propozycji zbudowanych, zanim to pole istnialo.
+        adv = (proposal.get("account") or {}).get("advertiserId") or TEST_ADVERTISER
+        if not adv:
+            return {"error": "Propozycja nie niesie advertisera, a na produkcji nie ma "
+                             "domyslnego — zbuduj ja ponownie."}
         svc = service(read_only=dry)
         if is_new:
             # nothing to read yet — the orchestrator creates it and assigns dates/id
-            campaign, state = camp_spec, fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER)
+            campaign, state = camp_spec, fetch_state(svc, TEST_PROFILE, adv)
         else:
             campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
-            state = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+            state = fetch_state(svc, TEST_PROFILE, adv, cid)
         # PLACEMENTY SERWUJĄCE: writer istnieje (upload assetu -> kreacja DISPLAY ->
         # placement z wymiarami -> ad standardowy), ale NIE przeszedł jeszcze ani jednego
         # przebiegu na żywym koncie. Dwie rzeczy rozstrzygnie dopiero pierwszy insert:
@@ -548,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
                              "istnieją jeszcze w kampanii — CM360 odrzuciłby je w połowie "
                              f"zapisu (błąd 18112). Uzupełnij adres albo wskaż istniejące "
                              f"LP. Brakuje: {szczegoly}"}
-        orch = Orchestrator(svc, TEST_PROFILE, TEST_ADVERTISER, campaign, dry_run=dry)
+        orch = Orchestrator(svc, TEST_PROFILE, adv, campaign, dry_run=dry)
         log = orch.run(proposal, state)
         out = {"dryRun": dry, "log": log, "campaignId": orch.cid}
         if no_url:
@@ -565,7 +603,7 @@ class Handler(BaseHTTPRequestHandler):
             proposal["tags"] = B.compute_tags(proposal)
             # refetch fresh state (everything just written now exists) and resolve
             # the proposal's (site/placement/ad/creative) tag rows to live ids
-            fresh = fetch_state(svc, TEST_PROFILE, TEST_ADVERTISER, cid)
+            fresh = fetch_state(svc, TEST_PROFILE, adv, cid)
             pairs, missing = resolve_tag_pairs(fresh, proposal)
             if pairs:
                 # nazwa pliku powstaje PO odczycie, bo schemat wymaga nazw kampanii

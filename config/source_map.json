@@ -10,7 +10,7 @@
                      "fileFormats": { "mode": "adSuffix", "aliases": { "jpg": "png", "jpeg": "png" }, "placements": { "gif": "GIF", "html": "HTML", "png": "Display" } } },
     "Facebook":    { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Statyki": "Statyki", "Animacje": "Animacje", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "placementByType": { "video": "Video", "image": "Display", "gif": "Display", "html5": "Display" }, "adKey": "variant_dim_card", "lpSource": "FB" },
     "Meta":        { "site": "CG_Facebook",     "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela", "Statyki": "Statyki", "Animacje": "Animacje", "Video": "Animacje", "Link": "Link", "Posty": "Posty" }, "placementByType": { "video": "Video", "image": "Display", "gif": "Display", "html5": "Display" }, "adKey": "variant_dim_card", "lpSource": "FB", "_note": "alias of Facebook" },
-    "DemGen":      { "site": "CG_Demand_Gen",   "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela" },                     "adKey": "variant" },
+    "DemGen":      { "site": "CG_Demand_Gen",   "placementByFormat": { "Display": "Display", "Karuzela": "Karuzela" },                     "adKey": "variant", "lpSource": "Demand_gen" },
     "Programmatic":{ "site": "CG_Programmatic", "placementByFormat": { "Display": "Display" },                                            "adKey": "dimension", "lpSource": "programmatic",
                      "serving": { "audiences": ["default", "prospecting", "retargeting"], "placementAudiences": ["prospecting", "retargeting"],
                                   "adName": "Display", "creativeName": "dimension", "defaultAudience": "default",

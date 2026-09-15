@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "parser"))
 import parse_zip
 import matcher
+import cm_env
 
 
 def _group_lines(campaign_lps):
@@ -33,9 +34,22 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_MAP = os.path.join(BASE, "config", "source_map.json")
 
 
+def load_sources():
+    """Mapa źródeł z nazwami Site AKTYWNEGO konta.
+
+    Te same źródła nazywają się na kontach inaczej (WP to `WP.pl` na produkcji, ale na
+    koncie testowym takiego Site nie ma — jest `CG_WP`), a `_status` porównuje nazwy
+    dokładnie. Override jest nakładany TU, w jednym miejscu, żeby żadna ze ścieżek
+    (tracking / serving / mailing / formaty z opisu) nie mogła go ominąć.
+    """
+    sources = json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    return {k: (dict(v, site=cm_env.site_name(v["site"])) if v.get("site") else v)
+            for k, v in sources.items()}
+
+
 def source_conf(source, source_map=None):
     """Konfiguracja jednego źródła z source_map (pusty dict, gdy nieznane)."""
-    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    source_map = source_map or load_sources()
     return source_map.get(source) or {}
 
 
@@ -48,7 +62,7 @@ def lp_source(source, source_map=None):
     `detect_line_conflict`, which reads the source back OUT of an existing LP name and
     compared `Facebook` with `FB` — a comparison that could never match.
     """
-    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    source_map = source_map or load_sources()
     return (source_map.get(source) or {}).get("lpSource") or source
 
 
@@ -123,7 +137,7 @@ def build_questions(parsed, line_conflict=None, chosen_source=None, folder_match
                     lines=None, source_map=None, sources=None, line_addresses=None):
     """Decision points to surface in the UI before/while building the tree."""
     q = []
-    src_conf = ((source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"])
+    src_conf = ((source_map or load_sources())
                 .get(chosen_source) or {})
     selected = selected_sources(chosen_source, sources) if chosen_source else []
     lns = lines or []
@@ -210,11 +224,19 @@ def compute_tags(proposal):
     """Derive the tag list (site/placement/ad/creative) fresh from the CURRENT
     placements/ads/creatives. Always call this at commit time instead of trusting
     proposal["tags"] verbatim — the UI lets users add placements/ads/creatives after
-    the proposal was first built, and a stale tags field would silently miss them."""
+    the proposal was first built, and a stale tags field would silently miss them.
+
+    Placementy SERWUJĄCE (programmatic) są pomijane: tam CM sam serwuje kreacje, więc
+    nie wydajemy żadnych tagów — wgrywamy materiały i strukturę do kampanii i na tym
+    koniec (ustalenie usera, 15.09.2026). Gdyby je tu zostawić, arkusz dostałby wiersze
+    per (ad × kreacja), których nikt nigdzie nie wkleja, a realny tag programmatica jest
+    i tak na poziomie PLACEMENTU, nie trójki.
+    """
     site = proposal["site"]["name"]
     return [{"site": pl.get("site", site), "placement": pl["name"], "ad": a["name"],
              "creative": cr["name"]}
-            for pl in proposal["placements"] for a in pl["ads"] for cr in a["creatives"]]
+            for pl in proposal["placements"] if not pl.get("serving")
+            for a in pl["ads"] for cr in a["creatives"]]
 
 
 def _line_node(L, fallback_url=None):
@@ -340,7 +362,7 @@ def formats_from_message(message, sources, source_map=None, main=None):
     Nazwane formaty bez wymiaru (`native ad` -> `NativeAd`) biorą się z `messageFormats`
     w configu źródła, bo to konwencja konkretnego wydawcy, nie reguła ogólna.
     """
-    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    source_map = source_map or load_sources()
     sources = list(sources or [])
     out = {}
     for chunk in re.split(r"[\n;]+", message or ""):
@@ -466,14 +488,13 @@ def mailing_lines(parsed, conf, campaign, start_no=1, override=None, main_url=No
             lab = (row.get("label") or label).strip() or label
             url = (row.get("url") if row.get("url") is not None
                    else _with_utm(src_url, utm))
-            # LP wiersza CTA nie nosi sufiksu — w arkuszu klienta to samo `mail1`.
-            # Kreacja i ad sufiks ZACHOWUJĄ (`mail-1-CTA`), bo tak jest na koncie;
-            # różnicę potwierdził użytkownik. Reguła idzie za etykietą, więc user, który
-            # przemianuje `CTA` na coś innego, świadomie z niej wychodzi.
-            lp_lab = None if lab.lower() == cta_label.lower() else lab
+            # LP wiersza CTA nosi sufiks jak każdy inny link (`mail1-CTA`). Przez chwilę
+            # (28.08) było bez — na podstawie odczytu arkusza — ale odczyt ŻYWEJ kampanii
+            # produkcyjnej 36424648 pokazał `mail1-CTA` i `mail1-regulamin`, a żadnego
+            # `mail1`. Zasada: przy rozjeździe wygrywa to, co jest na produkcji.
             out.append({
                 "lineNumber": no, "mail": no, "label": lab,
-                "lpName": matcher.mail_lp_name(no, lp_lab),
+                "lpName": matcher.mail_lp_name(no, lab),
                 "creativeName": matcher.mail_creative_name(no, lab),
                 "adName": matcher.mail_ad_name(no),
                 "source": None, "path": None, "reused": False, "url": url,
@@ -699,7 +720,7 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
     campaign_lps : optional [{lpName, lpUrl}] existing landing pages of the campaign
     target_url   : optional full URL being added (shown for the current line)
     """
-    source_map = source_map or json.load(open(SRC_MAP, encoding="utf-8"))["sources"]
+    source_map = source_map or load_sources()
     selected = selected_sources(source, sources)
     main_conf = source_map.get(source, {"site": source, "placementByFormat": {},
                                         "adKey": "dimension"})

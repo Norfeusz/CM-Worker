@@ -15,16 +15,42 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import HttpRequest
 
+import cm_env
+
 SCOPES = ["https://www.googleapis.com/auth/dfatrafficking"]
 
 # ---- SAFETY ALLOWLIST -------------------------------------------------------
-# Hard limits enforced in code until we explicitly go to production:
-#   * only these CM360 user profiles may be queried (blocks the MBank profile),
-#   * only these advertisers may be touched (blocks all other advertisers),
-#   * only GET requests are allowed (blocks every write).
-# Any violation raises before the request reaches the API.
-ALLOWED_PROFILE_IDS = {"9556074"}       # Cube Group EMEA CEE PL (test)
-ALLOWED_ADVERTISER_IDS = {"11992166"}   # test advertiser in Cube Group
+# Twarde ograniczenia wymuszane w kodzie, zależne od AKTYWNEGO ŚRODOWISKA
+# (`config/environments.json`, wybór zmienną CM_ENV — patrz `cm_env.py`):
+#   * tylko profil tego środowiska (test NIE dosięgnie MBanku, prod NIE dosięgnie testu),
+#   * tylko advertiserzy tego środowiska — chyba że lista jest pusta (None), co na
+#     produkcji znaczy „wszyscy advertiserzy TEGO profilu” (decyzja usera: advertiser
+#     bierze się z linku, a profil i tak oddziela konta),
+#   * zapisy tylko przy `service(read_only=False)` ORAZ gdy środowisko je dopuszcza,
+#   * DELETE nigdy, w żadnym środowisku.
+# Każde naruszenie podnosi wyjątek ZANIM żądanie wyjdzie do API.
+#
+# Funkcje, nie stałe: `CM_ENV` bywa ustawiane przed importem, a testy przełączają
+# środowisko w locie. Stałe modułowe zamroziłyby pierwszą odczytaną wartość.
+
+
+def allowed_profile_ids():
+    return {cm_env.profile_id()}
+
+
+def allowed_advertiser_ids():
+    """Zbiór dozwolonych advertiserów albo None = wszyscy tego profilu."""
+    return cm_env.advertiser_ids()
+
+
+def _adv_ok(adv):
+    ids = allowed_advertiser_ids()
+    return ids is None or str(adv) in ids
+
+
+def _adv_note():
+    ids = allowed_advertiser_ids()
+    return "wszyscy tego profilu" if ids is None else sorted(ids)
 
 _ORIG_EXECUTE = HttpRequest.execute
 _GUARD_INSTALLED = False
@@ -42,10 +68,10 @@ def _check_body(body):
     if not isinstance(data, dict):
         return
     adv = data.get("advertiserId")
-    if adv is not None and str(adv) not in ALLOWED_ADVERTISER_IDS:
+    if adv is not None and not _adv_ok(adv):
         raise RuntimeError(
             f"SAFETY guard: blocked write with advertiserId={adv} in body "
-            f"(allowed: {sorted(ALLOWED_ADVERTISER_IDS)}).")
+            f"(allowed: {_adv_note()}).")
 
 
 def _check_uri(uri):
@@ -55,20 +81,24 @@ def _check_uri(uri):
 
     # 1) profile in path: /userprofiles/{profileId}/...
     m = re.search(r"/userprofiles/(\d+)", path)
-    if m and m.group(1) not in ALLOWED_PROFILE_IDS:
+    if m and m.group(1) not in allowed_profile_ids():
         raise RuntimeError(
             f"SAFETY guard: blocked access to profile {m.group(1)} "
-            f"(allowed: {sorted(ALLOWED_PROFILE_IDS)}). URI={uri}")
+            f"(allowed: {sorted(allowed_profile_ids())}). URI={uri}")
 
     # 2) advertiser get by id: /advertisers/{id}
     m = re.search(r"/advertisers/(\d+)", path)
-    if m and m.group(1) not in ALLOWED_ADVERTISER_IDS:
+    if m and not _adv_ok(m.group(1)):
         raise RuntimeError(
             f"SAFETY guard: blocked advertiser {m.group(1)} "
-            f"(allowed: {sorted(ALLOWED_ADVERTISER_IDS)}). URI={uri}")
+            f"(allowed: {_adv_note()}). URI={uri}")
 
-    # 3) bare advertiser LIST (no id) would enumerate all advertisers -> block
-    if re.search(r"/advertisers$", path):
+    # 3) gołe LISTOWANIE advertiserów wyliczyłoby wszystkich na koncie.
+    #    Blokowane TYLKO tam, gdzie środowisko ma zamkniętą listę (test): tam każde
+    #    wyjście poza jednego advertisera jest błędem. Na produkcji advertiserzy tego
+    #    profilu są dozwoleni z definicji, a lista jest potrzebna, żeby w ogóle dało się
+    #    zweryfikować mapowanie linku na advertisera. Profil nadal ogranicza regułę 1.
+    if re.search(r"/advertisers$", path) and allowed_advertiser_ids() is not None:
         raise RuntimeError(
             "SAFETY guard: blocked listing ALL advertisers. "
             "Scope calls to the allowed advertiser instead. URI=" + uri)
@@ -76,10 +106,10 @@ def _check_uri(uri):
     # 4) any advertiserIds/advertiserId query filter must stay within allowlist
     for key in ("advertiserIds", "advertiserId"):
         for v in qs.get(key, []):
-            if v not in ALLOWED_ADVERTISER_IDS:
+            if not _adv_ok(v):
                 raise RuntimeError(
                     f"SAFETY guard: blocked advertiserId filter {v} "
-                    f"(allowed: {sorted(ALLOWED_ADVERTISER_IDS)}). URI={uri}")
+                    f"(allowed: {_adv_note()}). URI={uri}")
 
     # 5) advertiserId jako SEGMENT ŚCIEŻKI — upload assetów kreacji ma go właśnie tam:
     #    /userprofiles/{profileId}/creativeAssets/{advertiserId}/creativeAssets
@@ -88,10 +118,10 @@ def _check_uri(uri):
     #    advertisera przechodziłby przez allowlistę. Znalezione przed pierwszym realnym
     #    zapisem programmatica.
     m = re.search(r"/creativeAssets/(\d+)", path)
-    if m and m.group(1) not in ALLOWED_ADVERTISER_IDS:
+    if m and not _adv_ok(m.group(1)):
         raise RuntimeError(
             f"SAFETY guard: blocked creative-asset upload for advertiser {m.group(1)} "
-            f"(allowed: {sorted(ALLOWED_ADVERTISER_IDS)}). URI={uri}")
+            f"(allowed: {_adv_note()}). URI={uri}")
 
 
 def _install_read_only_guard():
@@ -137,8 +167,20 @@ def get_creds():
 
 
 def service(read_only=True):
+    """Klient CM360 z ZAWSZE założonym bezpiecznikiem.
+
+    Zapis wymaga DWÓCH zgód naraz: wywołania `service(read_only=False)` i środowiska,
+    które zapisy dopuszcza. Produkcja startuje jako tylko-do-odczytu (patrz
+    `cm_env.writes_allowed`), więc dopóki nie padnie świadome `CM_PROD_WRITES=1`,
+    żadna ścieżka w kodzie nie jest w stanie ruszyć konta klienta — nawet ta, która
+    o środowisku nic nie wie.
+    """
     global WRITE_ENABLED
     _install_read_only_guard()          # guard is ALWAYS installed
+    if not read_only:
+        ok, why = cm_env.writes_allowed()
+        if not ok:
+            raise RuntimeError(f"SAFETY guard: {why}")
     WRITE_ENABLED = not read_only       # writes only when explicitly requested
     return build("dfareporting", "v5", credentials=get_creds(), cache_discovery=False)
 

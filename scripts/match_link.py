@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import matcher as M
+import cm_env
 from cm_auth import service
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,8 +21,32 @@ MAP_PATH = os.path.join(BASE, "config", "advertiser_map.json")
 # --test routes any resolved advertiser's campaign lookup to the test account,
 # while keeping the real anchor for path-stripping. Lets us validate campaign
 # matching with production-style mbank URLs against the test advertiser.
-TEST_PROFILE = "9556074"
-TEST_ADVERTISER = "11992166"
+#
+# Nazwy zostają (18 wywołań w `serve.py` i pół orkiestratora), ale WARTOŚCI idą teraz
+# z aktywnego środowiska — patrz `cm_env`. Na produkcji `TEST_ADVERTISER` jest None,
+# bo advertiserów jest kilkanaście i wybiera go LINK; kod, który go potrzebuje, musi
+# wtedy użyć `advertiser_for()`, a nie zakładać, że istnieje jeden.
+TEST_PROFILE = cm_env.profile_id()
+_env_advertisers = cm_env.advertiser_ids()
+TEST_ADVERTISER = sorted(_env_advertisers)[0] if _env_advertisers else None
+
+
+def advertiser_for(rule):
+    """Advertiser, na którym mamy pracować dla TEGO linku.
+
+    Na koncie testowym jest jeden i wygrywa zawsze — dzięki temu produkcyjne adresy
+    mBanku da się przepuścić przez testowego advertisera (to cały sens trybu `--test`).
+    Na produkcji bierzemy tego, którego `advertiser_map.json` rozwiązał z linku; brak
+    reguły to błąd do pokazania użytkownikowi, nie cichy fallback na cokolwiek.
+    """
+    if TEST_ADVERTISER:
+        return TEST_ADVERTISER
+    adv = (rule or {}).get("advertiserId")
+    if not adv:
+        raise RuntimeError(
+            "Nie rozpoznano advertisera dla tego adresu, a na produkcji nie ma "
+            "domyślnego. Uzupełnij regułę w config/advertiser_map.json.")
+    return adv
 
 
 def _fetch_campaign_lps(svc, profile_id, advertiser_id):

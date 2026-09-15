@@ -1,0 +1,25 @@
+{
+  "_comment": "ŚRODOWISKA CM360. Jeden kod, dwa konta — nigdy dwie kopie repo, bo te zawsze się rozjeżdżają. Wybór przez zmienną CM_ENV (domyślnie 'test'); `start.bat` zostaje testowy, produkcję uruchamia osobny `start-prod.bat`.",
+  "_writes": "`writes` to DRUGI bezpiecznik, niezależny od `service(read_only=False)`: produkcja startuje jako TYLKO DO ODCZYTU i zapis odblokowuje się dopiero zmienną CM_PROD_WRITES=1. Tak było umówione — najpierw narzędzie do weryfikacji wyszukiwarki kampanii, zapisy dopiero gdy testowa wersja przepuści komplet materiałów.",
+  "_advertisers": "`advertiserIds: null` = wszyscy advertiserzy TEGO profilu (tak chce user dla produkcji). Allowlista profilu obowiązuje zawsze i w obu środowiskach — to ona oddziela konta od siebie. DELETE nie jest dozwolony nigdzie.",
+  "_sites": "`siteOverrides` nadpisuje nazwę Site z source_map.json dla TEGO środowiska — KLUCZEM jest nazwa z source_map, wartością nazwa na tym koncie. Potrzebne, bo te same źródła nazywają się na kontach inaczej: WP to `WP.pl` (3080134) na produkcji, ale na koncie testowym takiego Site NIE MA — jest `CG_WP` (6781651) i `Wp.pl` małym `p`. Porównanie nazw jest dokładne, więc bez tego dry-run na teście mówiłby 'Site nie istnieje'.",
+
+  "environments": {
+    "test": {
+      "label": "TESTOWE (Cube Group)",
+      "profileId": "9556074",
+      "advertiserIds": ["11992166"],
+      "writes": true,
+      "siteOverrides": { "WP.pl": "CG_WP" },
+      "_verified": "2026-07-29: CG_GDN=4982174, CG_Facebook=5009061, CG_Demand_Gen=10795500, CG_Programmatic=7477644, mailsales.pl=2836807, CG_WP=6781651"
+    },
+    "prod": {
+      "label": "PRODUKCJA (MBank)",
+      "profileId": "9765911",
+      "advertiserIds": null,
+      "writes": false,
+      "siteOverrides": {},
+      "_verified": "2026-09-15, ID podane przez usera: CG_GDN=5271077, CG_Facebook=5138485, CG_Demand_Gen=10682870, CG_Programmatic=5135321, mailsales.pl=4218739, WP.pl=3080134"
+    }
+  }
+}

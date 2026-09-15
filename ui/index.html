@@ -700,6 +700,33 @@
 
     // Choose the campaign to build on: an existing one, or a brand-new one by name.
     // Used both when nothing matched the link and when swapping the matched campaign.
+    // Które konto CM360 jest pod spodem. Widoczne ZAWSZE, nie tylko po zbudowaniu
+    // propozycji: trafficker musi wiedzieć, czy patrzy na konto testowe, czy na konto
+    // klienta, ZANIM cokolwiek kliknie. Produkcja krzyczy kolorem, test jest dyskretny.
+    function EnvBadge() {
+      const [env, setEnv] = useState(null);
+      useEffect(() => {
+        fetch('/api/env').then(r => r.json()).then(setEnv).catch(() => {});
+      }, []);
+      if (!env) return null;
+      const prod = env.isProd;
+      return (
+        <span title={env.writesNote || `profil ${env.profileId}`}
+          style={{
+            marginLeft: 10, padding: '3px 10px', borderRadius: 999, fontSize: 12,
+            fontWeight: 700, letterSpacing: .3, whiteSpace: 'nowrap',
+            background: prod ? 'var(--warn-bg)' : 'transparent',
+            color: prod ? 'var(--warn)' : 'var(--muted)',
+            border: `1px solid ${prod ? 'var(--warn-line)' : 'var(--line)'}`,
+          }}>
+          {prod ? '🔴 PRODUKCJA' : '🧪 TEST'}
+          <span style={{ fontWeight: 500, opacity: .85 }}>
+            {' · '}{env.writes ? 'zapis' : 'tylko odczyt'}
+          </span>
+        </span>
+      );
+    }
+
     function CampaignPicker({ pathHint, currentId, busy, candidates, onPickExisting, onCreateNew }) {
       const [name, setName] = useState(pathHint || '');
       // Kampanie, które COŚ dzielą ze ścieżką, ale za mało na automatyczny wybór
@@ -1606,6 +1633,7 @@
                 której strona używa na swoim ciemnym pasku), nie odtworzony ręcznie. */}
             <img className="logo" src="/cubegroup-logo.svg" alt="Cube Group" />
             <h1>CM Worker <span className="h1-sub">— weryfikacja struktury</span></h1>
+            <EnvBadge />
             {pending && (
               <div className="busy-chip" role="status" aria-live="polite">
                 <span className="spinner" />

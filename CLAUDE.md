@@ -73,9 +73,9 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (OSIEM plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`
-(**539/539 zielone na 28.08.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 94, proposal 182, orchestrate 44, create_site 15,
-ai_agents 104, export_tags 23, parse_zip 61, guard 16.
+(**576/576 zielone na 15.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 94, proposal 185, orchestrate 55, create_site 15,
+ai_agents 104, export_tags 23, parse_zip 61, guard 39.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
 (`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
@@ -505,6 +505,74 @@ dopasowuje się już przy JEDNYM wspólnym członie (`standard/google/1000` vs
 luźne. Propozycje: wymagać ≥2 członów przy dłuższej ścieżce, albo nie wybierać kampanii
 automatycznie przy jednym członie (pokazać jako kandydata). Decyzji nie ma.
 
+## DWA ŚRODOWISKA: test i produkcja (15.09.2026)
+
+Jeden kod, przełącznik `CM_ENV` — **nigdy dwie kopie repo**, bo te zawsze się rozjeżdżają.
+`config/environments.json` + `scripts/cm_env.py` (czysty odczyt configu, bez sieci i tokenu,
+żeby `cm_auth` mógł go użyć jeszcze przed zbudowaniem klienta).
+
+| | `test` (domyślnie) | `prod` |
+|---|---|---|
+| profil | 9556074 (Cube Group) | 9765911 (MBank) |
+| advertiserzy | tylko 11992166 | **wszyscy tego profilu**, wybiera LINK |
+| zapisy | dozwolone | **zablokowane** do `CM_PROD_WRITES=1` |
+| Site WP | `CG_WP` | `WP.pl` |
+| launcher | `start.bat` | `start-prod.bat` (szablon `.example`) |
+
+* **Bezpiecznik działa W OBIE STRONY.** Pracując na produkcji NIE dosięgniesz konta
+  testowego — bez tego „sprawdziłem na teście" przestaje cokolwiek znaczyć.
+* **Zapis wymaga DWÓCH zgód**: `service(read_only=False)` ORAZ środowiska, które zapisy
+  dopuszcza. Produkcja startuje jako tylko-do-odczytu i `service(read_only=False)` tam
+  **odmawia jeszcze przed zbudowaniem klienta** — więc żadna ścieżka w kodzie, nawet ta,
+  która o środowisku nic nie wie, nie ruszy konta klienta.
+* **Literówka w `CM_ENV` podnosi błąd**, zamiast cicho cofnąć się do jakiegokolwiek konta.
+* **Listowanie advertiserów** jest blokowane tylko tam, gdzie środowisko ma zamkniętą
+  listę (test). Na produkcji jest dozwolone — bez tego nie da się zweryfikować mapy.
+* **Allowlisty to FUNKCJE, nie stałe** (`allowed_profile_ids()`): `CM_ENV` bywa ustawiane
+  przed importem, a testy przełączają środowisko w locie; stałe zamroziłyby pierwszą wartość.
+* **Mapa Site jest per środowisko** (`siteOverrides`, kluczem nazwa z `source_map.json`).
+  Te same źródła nazywają się na kontach inaczej, a `_status` porównuje dokładnie.
+  Nakładane w `build_proposal.load_sources()` — JEDNO miejsce, żeby żadna ścieżka
+  (tracking / serving / mailing / formaty z opisu) go nie ominęła.
+* **Advertiser nie jest już stałą.** `match_link.advertiser_for(rule)`: na teście wygrywa
+  jedyny advertiser (o to chodzi w trybie testowym — produkcyjne adresy mBanku puszczamy
+  przez advertisera testowego), na produkcji bierze go link. Propozycja niesie
+  `account.advertiserId`, bo jedzie do przeglądarki i wraca, a `/api/commit` musi wiedzieć,
+  do kogo pisać. `/api/campaigns` i `/api/site-structure` przyjmują `advertiserId`.
+* **`GET /api/env`** + wskaźnik w nagłówku UI: 🧪 TEST (dyskretny) / 🔴 PRODUKCJA (żółty).
+  Widoczny ZAWSZE, nie tylko po zbudowaniu propozycji.
+
+### `scripts/prod_check.py` — weryfikacja wyszukiwarki na produkcji (read-only)
+Narzędzie pośrednie, **fizycznie bez ścieżki zapisu** — lepszy pierwszy kontakt z kontem
+klienta niż całe UI. `CM_ENV=prod py scripts/prod_check.py <link>` pokazuje rozwiązanego
+advertisera, ranking kampanii i powód dopasowania; `--campaign <id>` całą strukturę;
+`--file linki.txt` sprawdza wiele linków naraz (mapa advertiserów to wciąż prototyp).
+
+**Zweryfikowane na produkcji 15.09.2026**: link `.../ubezpieczenia/szkola-2/` → advertiser
+`CG Indywidualny - Ubezpieczenia` → kampania `36424648 'Promocja NNW 08-09.2026'` (po LP
+`mail1-CTA`, spośród **530** stron docelowych). Struktura: 185 adów, 269 przypisań kreacji.
+
+### Co produkcja zweryfikowała w naszych regułach
+Struktura żywej kampanii potwierdziła **wszystko** poza dwoma nazwami LP (poprawione —
+zasada: przy rozjeździe wygrywa produkcja):
+* ✅ DemGen ady `kv1/kv2/kv3`, Facebook `1080x1080-a_kv1`, WP.pl 17 adów, karuzela,
+  programmatic `{campaign}_{kv}_{data}-{audiencja}` z `size` + 14 `additionalSizes`
+* ❌ `linia1-Demand_gen` (nie `linia1-DemGen`) → doszedł `lpSource` dla DemGen
+* ❌ `mail1-CTA` (nie `mail1`) → **cofnięta zmiana z 28.08**; na koncie nie ma żadnego
+  `mail1`, są `mail1-CTA` i `mail1-regulamin`
+
+### Programmatic: pytania otwarte ZAMKNIĘTE bez zapisu próbnego
+Zamiast pierwszego insertu wystarczyło **przeczytać istniejące kreacje** z produkcji:
+* typ kreacji to **`DISPLAY`**, nie `HTML5_BANNER` (45 sztuk w kampanii)
+* **`BACKUP_IMAGE` NIE jest wymagany** — `backupImageReportingLabel: None`, jedyny asset
+  ma rolę `PRIMARY`
+* asset zipa HTML5 ma typ **`HTML`**, a CM sam wykrywa `clickTag`
+* CM zmienia nazwę assetu (`1786447715336/120x600.html`) — identyfikator MUSI iść
+  z ODPOWIEDZI, nigdy z tego, co wysłaliśmy (tak robimy)
+
+**Tagów dla programmatica NIE generujemy** (decyzja usera): wgrywamy materiały i strukturę,
+i na tym koniec. `compute_tags` pomija placementy `serving`.
+
 ## Model domenowy (zwalidowany na żywych danych CM360)
 
 | Pojęcie kliencie | Obiekt CM360 | Uwagi |
@@ -776,7 +844,10 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
 15. **Realny zapis struktury NNW na koncie testowym** — propozycja zgadza się z arkuszem
    klienta co do ada, ale ani razu jej nie zapisaliśmy. Naturalny następny krok
    weryfikacyjny (dry-run przez UI, potem decyzja usera o `--execute`).
-16. **⚠️ Orkiestrator NIE MA gałęzi `serving`.** `serving_placements` produkuje węzły
+16. ~~**Orkiestrator nie ma gałęzi `serving`**~~ — **ZROBIONE 28.08.2026**
+   (`_run_serving`, writery w `cm_write`). `/api/commit` nadal ODMAWIA realnego zapisu
+   placementów serwujących, dopóki writer nie przejdzie pierwszego przebiegu na żywym
+   koncie — to świadoma bramka do zdjęcia, nie niedoróbka. Historyczny opis problemu: `serving_placements` produkuje węzły
    z `serving: True`, `sizes`, `source_path`, a `Orchestrator.run` czyta tylko
    `name`/`ads`/`creatives` i nic w `/api/commit` tego nie blokuje. Realny zapis
    propozycji programmatica przeszedłby dziś **po cichu jako zwykły tracking**: placement
@@ -787,14 +858,14 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **siedem** plików (lista wyżej).
-   **Musi być 539/539.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 576/576.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest
    konieczny po KAŻDEJ zmianie w Pythonie** — user stracił na tym czas 27.08: zgłosił
    „mailing nie działa", a to była poprzednia wersja modułów w pamięci procesu.
-3. **UWAGA NA STAN REPO.** Gałąź `feat/campaign-site-and-ai-agents`, PR nieotwarty, nic
-   nie wypchnięte. Ostatni commit: `3ba2b3d` (27.08). **W drzewie roboczym zostało
+3. **UWAGA NA STAN REPO.** Gałąź `feat/campaign-site-and-ai-agents`, PR nieotwarty.
+   Wypchnięte do `f25d15d` (28.08); nowsze commity mogą czekać lokalnie. **W drzewie roboczym zostało
    9 plików NIEZACOMMITOWANYCH z 28.08** — user był pytany, nie odpowiedział:
    `config/source_map.json`, `data/training_examples.md`, `parser/parse_zip.py`,
    `scripts/build_proposal.py`, `scripts/matcher.py`, `scripts/serve.py`, `ui/index.html`

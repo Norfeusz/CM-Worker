@@ -157,7 +157,7 @@ WP_LINE = {"lineNumber": 1, "lpName": "linia1-WP", "source": "WP", "path": "x",
 pwp = B.build_proposal("WP", {"format_hint": "Display", "warnings": [], "groups": [],
                               "units": []}, camp, WP_LINE, sources=["WP"], message=MSG_WP)
 check("placement powstaje mimo braku paczki",
-      [(pl["site"], pl["name"]) for pl in pwp["placements"]], [("WP.pl", "Display")])
+      [(pl["site"], pl["name"]) for pl in pwp["placements"]], [("CG_WP", "Display")])
 check("po jednym adzie na format z opisu",
       [a["name"] for a in pwp["placements"][0]["ads"]],
       ["160x600", "300x250", "300x600", "750x100", "750x200", "750x300", "970x200",
@@ -222,7 +222,7 @@ pwpmix = B.build_proposal("GDN", WP_MIX, camp, WP_LINE, sources=["GDN", "WP"])
 check("folder `WP/` -> Site WP, reszta zostaje przy swoim",
       sorted((pl["site"], tuple(sorted(a["name"] for a in pl["ads"])))
              for pl in pwpmix["placements"]),
-      [("CG_GDN", ("300x250",)), ("WP.pl", ("750x200", "970x300"))])
+      [("CG_GDN", ("300x250",)), ("CG_WP", ("750x200", "970x300"))])
 # 2) samo źródło WP + paczka z JEDNYM folderem: folder nie staje się grupą (nie ma obok
 # czego być obcym), więc materiały idą na źródło zlecenia — jakkolwiek folder się nazywa
 WP_ONE = {"format_hint": "Display", "warnings": [], "groups": [],
@@ -230,12 +230,18 @@ WP_ONE = {"format_hint": "Display", "warnings": [], "groups": [],
 check("jedno źródło + jeden folder -> wszystko na to źródło",
       [(pl["site"], sorted(a["name"] for a in pl["ads"]))
        for pl in B.build_proposal("WP", WP_ONE, camp, WP_LINE, sources=["WP"])["placements"]],
-      [("WP.pl", ["300x250", "970x200"])])
+      [("CG_WP", ["300x250", "970x200"])])
 # ...ale afiliacja NIE jest wiązana z WP na sztywno: obok rozpoznanego folderu jest
 # zwykłą obcą grupą, o którą narzędzie pyta, a nie cichym materiałem WP
 AFI_MIX = dict(WP_MIX, groups=[{"name": "GDN", "source_hint": "GDN", "n_entries": 1},
                                {"name": "Afiliacja", "source_hint": None, "n_entries": 1}],
                units=[_u("300x250", "GDN", "GDN"), _u("970x200", "Afiliacja", "Afiliacja")])
+# Site WP nazywa się inaczej na każdym koncie (`CG_WP` na teście, `WP.pl` na produkcji),
+# a `_status` porównuje nazwy dokładnie — override musi działać w obie strony
+import cm_env as _env
+check("nazwa Site WP idzie z AKTYWNEGO środowiska",
+      (_env.site_name("WP.pl", "test"), _env.site_name("WP.pl", "prod")),
+      ("CG_WP", "WP.pl"))
 check("afiliacja obok GDN to obca grupa do decyzji, nie materiał WP",
       [q["id"] for q in B.build_proposal("GDN", AFI_MIX, camp, WP_LINE,
                                          sources=["GDN", "WP"])["questions"]],
@@ -693,11 +699,11 @@ check("linki bez adresu widoczne w propozycji",
 MAIN = ("https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-8/"
         "?utm_source=mailing&utm_medium=cpc&utm_campaign=nnw_08_26")
 with_cta = B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1, main_url=MAIN)
-# LP wiersza CTA jest bez sufiksu (`mail1`) — tak jest w gotowych tagach klienta;
-# kreacja i ad sufiks zachowują (`mail-1-CTA`), użytkownik potwierdził tę różnicę
+# LP wiersza CTA nosi sufiks jak każdy inny link. Sprawdzone na ŻYWEJ kampanii
+# produkcyjnej 36424648: są tam `mail1-CTA` i `mail1-regulamin`, nie ma `mail1`.
 check("zaślepka `#` + adres ze zlecenia -> dochodzi wiersz CTA",
       [(l["label"], l["creativeName"], l["lpName"]) for l in with_cta][-1:],
-      [("CTA", "mail-1-CTA", "mail1")])
+      [("CTA", "mail-1-CTA", "mail1-CTA")])
 check("CTA dostaje adres ze zlecenia, bez drugich UTM-ów",
       with_cta[-1]["url"], MAIN)
 check("...a etykiety linków z paczki się NIE przesuwają",
@@ -722,7 +728,7 @@ check("po nazwaniu linków wychodzi struktura z gotowych tagów klienta",
       ["mail-1-CTA", "mail-1-mbank", "mail-1-regulamin", "mail-1-slowniczek"])
 check("dopisany link niesie swój adres bez UTM-ów, gdy user podał go sam",
       mlines2[3]["url"], "https://www.mbank.pl/lp2/sierpien-2/")
-check("...i ma LP bez sufiksu, bo to CTA", mlines2[3]["lpName"], "mail1")
+check("...i ma swoje LP, z sufiksem jak reszta", mlines2[3]["lpName"], "mail1-CTA")
 # wyczyszczenie etykiety wraca do domyślnej litery, a nie do pustej nazwy
 check("wyczyszczona etykieta wraca do domyślnej litery",
       B.mailing_lines(PARSED_MAIL, MCONF, CAMP_MAIL, start_no=1,
@@ -808,6 +814,12 @@ check("audiencja i zestaw zapisane na węźle (dla writera)",
       [(pl["audience"], pl["set"]) for pl in psrv["placements"]],
       [("prospecting", "kv1"), ("retargeting", "kv1"),
        ("prospecting", "kv3"), ("retargeting", "kv3")])
+# programmatica NIE tagujemy: CM sam serwuje kreacje, więc wgrywamy materiały i strukturę,
+# a arkusz tagów ich nie obejmuje (ustalenie usera). Tag programmatica jest zresztą na
+# poziomie PLACEMENTU, nie trójki (placement × ad × kreacja), którą liczy `compute_tags`.
+check("placement serwujący nie produkuje wierszy tagów", psrv["tags"], [])
+check("...mimo że ma kreacje w drzewie",
+      sum(len(a["creatives"]) for pl in psrv["placements"] for a in pl["ads"]) > 0, True)
 check("wszystko na Site programmatica",
       {pl["site"] for pl in psrv["placements"]}, {"CG_Programmatic"})
 # bez zestawów nazwą linii jest słowo klucza, a bez niego konwencja `linia{N}`
