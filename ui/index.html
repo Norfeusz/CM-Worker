@@ -1944,10 +1944,10 @@
                 <div style={{ margin: '8px 0', padding: '8px 11px', borderRadius: 8,
                               background: 'var(--warn-bg)', color: 'var(--warn)',
                               border: '1px solid var(--warn-line)', fontWeight: 600 }}>
-                  ⚠️ Placementy serwujące (programmatic) nie mają jeszcze writera:{' '}
-                  {commitRes.servingWarning.join(', ')}. Dry-run pokazuje plan, ale zapis
-                  zostanie odrzucony — bez writera trafiłyby do CM360 jako zwykły tracking
-                  1×1, bez wymiarów i bez materiałów.
+                  ⚠️ Placementy serwujące (programmatic):{' '}
+                  {commitRes.servingWarning.join(', ')}. Ta ścieżka WGRYWA MATERIAŁY do
+                  CM360 — kreacji ani assetów nie da się potem usunąć (CM360 nie ma dla
+                  nich DELETE). Sprawdź plan, zanim klikniesz zapis.
                 </div>
               )}
               {commitRes.busy && <div className="busy-inline"><span className="spinner big" />

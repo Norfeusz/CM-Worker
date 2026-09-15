@@ -561,14 +561,35 @@ zasada: przy rozjeździe wygrywa produkcja):
 * ❌ `mail1-CTA` (nie `mail1`) → **cofnięta zmiana z 28.08**; na koncie nie ma żadnego
   `mail1`, są `mail1-CTA` i `mail1-regulamin`
 
-### Programmatic: pytania otwarte ZAMKNIĘTE bez zapisu próbnego
-Zamiast pierwszego insertu wystarczyło **przeczytać istniejące kreacje** z produkcji:
-* typ kreacji to **`DISPLAY`**, nie `HTML5_BANNER` (45 sztuk w kampanii)
-* **`BACKUP_IMAGE` NIE jest wymagany** — `backupImageReportingLabel: None`, jedyny asset
-  ma rolę `PRIMARY`
-* asset zipa HTML5 ma typ **`HTML`**, a CM sam wykrywa `clickTag`
-* CM zmienia nazwę assetu (`1786447715336/120x600.html`) — identyfikator MUSI iść
-  z ODPOWIEDZI, nigdy z tego, co wysłaliśmy (tak robimy)
+### Programmatic: writer PRZESZEDŁ pierwszy realny zapis (15.09.2026)
+Konto testowe, kampania **36889536** `ZZZ TEST writer programmatic 15.09.2026`. Cały
+łańcuch: LP `-default` (44314824) → kampania → LP prospecting (44314827) → REUSE Site →
+upload assetu → kreacja `300x250` (264277396) → placement (456676816) → ad `Display`
+(651050516). **CM sam dołożył ad `300x250 Default Web Ad`** biorący domyślną stronę
+kampanii — dokładnie jak zakładaliśmy i jak wygląda produkcja.
+
+Odczyt produkcji dał część odpowiedzi, ale **nie wszystkie** — reszta wyszła dopiero
+przy zapisie:
+* typ kreacji to **`DISPLAY`**, nie `HTML5_BANNER` (45 sztuk na produkcji) ✅ odczyt
+* **`BACKUP_IMAGE` NIE jest wymagany** — produkcyjne kreacje mają sam `PRIMARY` i żadnego
+  pola `backupImage*` ✅ odczyt
+* asset zipa HTML5 ma typ **`HTML`**; CM rozpakowuje zip i zmienia nazwę
+  (`1789468437301/300x250.html`), więc identyfikator MUSI iść z ODPOWIEDZI uploadu ✅
+* ⚠️ **każdy clickTag musi mieć `eventName`** — tego odczyt NIE pokazał. Bez niego insert
+  leci na `8169 : Nazwa raportowania jest wymagana.`, co brzmi jak brak
+  `backupImageReportingLabel`; dodanie tamtego pola daje dopiero `8248 : Kreacje bez
+  obrazu zapasowego nie mogą używać ustawień kreacji zapasowej`. **Test izolujący**
+  wykazał, że `windowMode` i `active` na asecie są niewinne — winny jest sam brak
+  `eventName`. A `creativeAssets.insert` zwraca clickTagi WŁAŚNIE bez niego, więc
+  przepisując je trzeba to pole uzupełnić z `name`.
+
+**Wniosek metodyczny**: odczyt żywej struktury zamyka większość pytań o kształt payloadu
+tanio i bez śmieci, ale pól WYMAGANYCH przy insercie z niego nie widać — API ich po prostu
+nie zwraca. Na to trzeba jednego realnego zapisu i uważnego czytania kodów błędów; komunikat
+potrafi wskazywać zupełnie inne pole niż to, które jest problemem.
+
+Bramka blokująca realny zapis serving w `/api/commit` została **zdjęta**. Ostrzeżenie w UI
+zostaje — ta ścieżka wgrywa materiały, a CM360 nie ma DELETE dla kreacji ani assetów.
 
 **Tagów dla programmatica NIE generujemy** (decyzja usera): wgrywamy materiały i strukturę,
 i na tym koniec. `compute_tags` pomija placementy `serving`.
@@ -778,7 +799,8 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    zbiorczo z jednym przeładowaniem. Orkiestrator nie wymagał zmian (dowiedzione testem).
    Zweryfikowane na żywym koncie i na realnej paczce klienta (45 adów, 102 tagi).
 
-1. **Tworzenie nowej kampanii — ZAIMPLEMENTOWANE, ale NIGDY NIE URUCHOMIONE NA ŻYWO.**
+1. ~~**Tworzenie nowej kampanii**~~ — **ZROBIONE NA ŻYWO 15.09.2026** (kampania
+   36889536 na koncie testowym). Opis mechaniki zostaje, bo kolejność jest nieoczywista:
    `cm_write.campaign()` + gałąź `campaign.status=="new"` w orkiestratorze + `newCampaign`
    w `/api/build-proposal` + przycisk „➕ Nowa kampania" w UI. Domyślne: start = dziś,
    koniec = start+5 lat (`cm_write.campaign_dates`), `euPoliticalAdsDeclaration` =
@@ -841,9 +863,8 @@ ktoś liczył jednostki albo brał typ z reprezentanta ada.
    folder będący FORMATEM źródła znika z nazwy ada (`1080x1920_1` na placemencie
    `Statyki`), ale zostaje tam, gdzie jednostki nie mają wymiaru — inaczej z karty
    karuzeli zostałoby samo `1`/`2`. Patrz `drop_variant_in()`.
-15. **Realny zapis struktury NNW na koncie testowym** — propozycja zgadza się z arkuszem
-   klienta co do ada, ale ani razu jej nie zapisaliśmy. Naturalny następny krok
-   weryfikacyjny (dry-run przez UI, potem decyzja usera o `--execute`).
+15. **Realny zapis PEŁNEJ struktury NNW** — zapisany został jeden wymiar programmatica
+   (p. 1). Cała kampania (GDN + Meta + DemGen + WP + mailing) nadal tylko w dry-runie.
 16. ~~**Orkiestrator nie ma gałęzi `serving`**~~ — **ZROBIONE 28.08.2026**
    (`_run_serving`, writery w `cm_write`). `/api/commit` nadal ODMAWIA realnego zapisu
    placementów serwujących, dopóki writer nie przejdzie pierwszego przebiegu na żywym

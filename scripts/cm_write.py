@@ -269,21 +269,29 @@ def display_creative(svc, profile_id, advertiser_id, name, dimension, asset_id,
     `click_tags` przepisujemy z odpowiedzi uploadu: CM wykrywa je w zipie HTML5 i bez
     nich kreacja nie ma gdzie kliknąć.
 
-    OTWARTE do rozstrzygnięcia pierwszym realnym insertem (konto testowe nie ma ani
-    jednej kreacji HTML5): czy CM wymusza BACKUP_IMAGE przy zipie i czy dla HTML5 chce
-    typu `DISPLAY` czy `HTML5_BANNER`. Zostawiamy `DISPLAY` (nowszy) i opcjonalny backup.
+    Rozstrzygnięte pierwszym realnym insertem (15.09.2026, konto testowe):
+      * typ to `DISPLAY` — potwierdzone też odczytem 45 kreacji z produkcji;
+      * asset `BACKUP_IMAGE` NIE jest wymagany: produkcyjne kreacje mają sam `PRIMARY`
+        i ŻADNEGO pola `backupImage*`;
+      * **każdy clickTag musi mieć `eventName`** — inaczej CM odrzuca insert błędem
+        `8169 : Nazwa raportowania jest wymagana.` Komunikat myli, bo brzmi jak brak
+        `backupImageReportingLabel`; dodanie tamtego pola daje dopiero `8248 : Kreacje
+        bez obrazu zapasowego nie mogą używać ustawień kreacji zapasowej`. Winowajca
+        wskazany testem izolującym: `windowMode` i `active` na asecie są niewinne,
+        wystarczy brak `eventName`. A `creativeAssets.insert` zwraca clickTagi WŁAŚNIE
+        bez `eventName`, więc przepisując je trzeba to pole uzupełnić z `name`.
     """
-    assets = [{"assetIdentifier": asset_id, "role": "PRIMARY",
-               "windowMode": "TRANSPARENT", "active": True}]
+    assets = [{"assetIdentifier": asset_id, "role": "PRIMARY", "active": True}]
     if backup_asset_id:
         assets.append({"assetIdentifier": backup_asset_id, "role": "BACKUP_IMAGE",
                        "active": True})
     payload = {"name": name, "advertiserId": advertiser_id, "type": "DISPLAY",
                "size": size_of(dimension), "active": True, "creativeAssets": assets}
-    if click_tags:
-        payload["clickTags"] = click_tags
     if backup_asset_id:
         payload["backupImageReportingLabel"] = name
+    if click_tags:
+        payload["clickTags"] = [dict(t, eventName=t.get("eventName") or t.get("name"))
+                                for t in click_tags]
     if dry_run:
         print(f"[DRY-RUN] creatives.insert (DISPLAY)\n"
               f"{json.dumps(payload, ensure_ascii=False, indent=2)}")

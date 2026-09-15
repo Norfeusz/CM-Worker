@@ -551,20 +551,13 @@ class Handler(BaseHTTPRequestHandler):
         else:
             campaign = svc.campaigns().get(profileId=TEST_PROFILE, id=cid).execute()
             state = fetch_state(svc, TEST_PROFILE, adv, cid)
-        # PLACEMENTY SERWUJĄCE: writer istnieje (upload assetu -> kreacja DISPLAY ->
-        # placement z wymiarami -> ad standardowy), ale NIE przeszedł jeszcze ani jednego
-        # przebiegu na żywym koncie. Dwie rzeczy rozstrzygnie dopiero pierwszy insert:
-        # czy CM wymusza BACKUP_IMAGE przy zipie HTML5 i czy chce typu DISPLAY czy
-        # HTML5_BANNER. Pomyłka zostawia na koncie nieusuwalne kreacje i assety, więc do
-        # czasu tego przebiegu odmawiamy realnego zapisu. Dry-run przechodzi — po to jest.
-        # ZDJĄĆ po udanym pierwszym zapisie jednego wymiaru (za zgodą użytkownika).
+        # PLACEMENTY SERWUJĄCE (programmatic) — writer przeszedł pełny przebieg na żywym
+        # koncie testowym 15.09.2026 (kampania 36889536): upload assetu -> kreacja DISPLAY
+        # -> placement z wymiarem -> ad `AD_SERVING_STANDARD_AD`, a CM sam dołożył ad
+        # `300x250 Default Web Ad` biorący domyślną stronę kampanii. Bramka blokująca
+        # realny zapis została zdjęta; ostrzeżenie zostaje, bo ta ścieżka wgrywa MATERIAŁY
+        # i jest nieodwracalna (CM360 nie ma DELETE dla kreacji ani assetów).
         serving = Orchestrator.serving_names(proposal)
-        if serving and not dry:
-            return {"error": "Nie zapisuję: writer placementów serwujących (programmatic) "
-                             "nie był jeszcze uruchomiony na żywym koncie, a pomyłka "
-                             "zostawia tam nieusuwalne kreacje i assety. Obejrzyj dry-run; "
-                             "pierwszy realny zapis robimy świadomie, na jednym wymiarze. "
-                             f"Dotyczy: {', '.join(serving)}."}
         if not dry:
             # Sites must already exist before we write anything: site creation sits AFTER
             # the LP/campaign steps, so failing there would leave a half-written campaign.
