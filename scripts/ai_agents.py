@@ -469,6 +469,35 @@ def _find(seq, name):
     return next((x for x in seq if x["name"] == name), None)
 
 
+class Ambiguous(LookupError):
+    """Nazwa wskazuje kilka węzłów naraz — patrz `_find_placement`."""
+
+
+def _find_placement(placements, name):
+    """Placement o tej nazwie — ALBO wyjątek, gdy nazwa wskazuje kilka.
+
+    Jedno zlecenie może mieć dwa placementy o IDENTYCZNEJ nazwie na różnych Site:
+    `Display` Facebooka obok `Display` WP to normalny kształt, nie błąd. Operacje agenta
+    niosą jednak samą nazwę (`INTENT_SCHEMA` nie ma pola Site), więc `_find` brał po cichu
+    PIERWSZY pasujący — i dokładał ad do cudzego źródła.
+
+    Wyszło na żywym modelu (15.09.2026): agent napisał wprost „założono, że 750x300 ma
+    trafić do placementu WP", a operacja wylądowała na Facebooku. Sam model zachował się
+    poprawnie — zgłosił niejednoznaczność w `unclear`; to kod ją ignorował.
+
+    Przy niejednoznaczności NIE zgadujemy: operacja jest pomijana i raportowana, żeby
+    człowiek wskazał Site. Cicha zmiana w złym miejscu jest tu gorsza niż brak zmiany —
+    to ta sama zasada, przez którą creative adresujemy placementem i adem, nie nazwą.
+    """
+    hits = [x for x in placements if x["name"] == name]
+    if len(hits) > 1:
+        sites = ", ".join(sorted({str(h.get("site") or "?") for h in hits}))
+        raise Ambiguous(
+            f"nazwa placementu {name!r} występuje {len(hits)} razy (Site: {sites}) — "
+            f"wskaż, o który chodzi")
+    return hits[0] if hits else None
+
+
 def _per_folder_shape(placements):
     """True when ads carry DIFFERENT sets of creatives.
 
@@ -603,10 +632,17 @@ def apply_ops(proposal, ops):
     for o in ops or []:
         kind = o.get("op")
         pls = p.setdefault("placements", [])
-        pl = _find(pls, o["placement"]) if o.get("placement") else None
+        # Każde sięgnięcie po placement NAZWĄ może trafić w kilka naraz (ten sam `Display`
+        # na dwóch Site). Wtedy operacja jest pomijana z czytelnym powodem zamiast lądować
+        # w pierwszym z brzegu — patrz `_find_placement`.
+        try:
+            pl = _find_placement(pls, o["placement"]) if o.get("placement") else None
+        except Ambiguous as e:
+            skip(o, str(e))
+            continue
 
         if kind == "rename_placement":
-            target = _find(pls, o.get("placement") or o.get("name"))
+            target = _find_placement(pls, o.get("placement") or o.get("name"))
             if not target:
                 skip(o, f"nie ma placementu {o.get('placement') or o.get('name')!r}")
             elif not o.get("to"):
@@ -660,8 +696,8 @@ def apply_ops(proposal, ops):
                     done(o, f"ad {old!r} -> {o['to']!r} w {pl['name']!r}")
 
         elif kind == "move_ad":
-            src = _find(pls, o.get("placement"))
-            dst = _find(pls, o.get("to") or o.get("name"))
+            src = _find_placement(pls, o.get("placement"))
+            dst = _find_placement(pls, o.get("to") or o.get("name"))
             ad = _find(src["ads"], o.get("ad") or o.get("name")) if src else None
             if not src or not dst:
                 skip(o, "nie ma placementu źródłowego albo docelowego")

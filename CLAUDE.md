@@ -73,9 +73,9 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`, `test_promote.py`
-(**603/603 zielone na 15.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+(**610/610 zielone na 15.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
 że nic się nie popsuło). Rozkład: matcher 94, proposal 185, orchestrate 55, create_site 15,
-ai_agents 104, export_tags 23, parse_zip 61, guard 39, promote 27.
+ai_agents 111, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
 (`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
@@ -830,6 +830,43 @@ ale robi duży diff — do rozważenia przy pierwszym realnym użyciu.
 **Reguły zaczynają działać po restarcie serwera** (moduły siedzą w pamięci procesu) — UI o tym
 mówi po zapisie.
 
+## PRZEBIEG AGENTÓW NA ŻYWYM MODELU (15.09.2026) — punkt 9 zamknięty
+
+Trzy zmiany czekały na weryfikację od sierpnia; przy okazji doszły reguły z 28.08 i 15.09.
+Wszystkie prompty najpierw **uzupełnione** (patrz commit `0b9a52b`), bo sprawdzenie pokrycia
+wykazało, że nie wiedzą o niczym, co powstało przez ostatnie tygodnie — nie ma sensu palić
+przebiegu na promptach, które i tak trzeba zmienić.
+
+**Co zadziałało** (Gemini przez n8n, paczka `nnw_meta.zip` + wiadomość z formatami WP):
+* deterministyczna część: Meta `Display` 22 ady + `Video` 6 (czyli `file_tag` i podział po
+  typie pliku działają end-to-end przez API), WP 4 ady **z samego opisu**, bez paczki;
+* rola (a) słusznie **nie wymyśliła nic** — `group_mappings: []`, bo paczka nie ma
+  podfolderów źródeł, dokładnie jak każe prompt. Pewność 0.95;
+* rola (b): `rename_creative_all` („linia1 -> linia2 na 31 adach, nic nie dołożono"),
+  `add_ad`, `add_creative`, `delete_ad` — 4 operacje, 0 pominiętych.
+
+**Co przebieg WYKRYŁ — realny bug, którego atrapa nie mogła złapać:**
+Jedno zlecenie może mieć dwa placementy o IDENTYCZNEJ nazwie na różnych Site (`Display`
+Facebooka obok `Display` WP — normalny kształt przy Meta+WP). Operacje agenta niosą samą
+nazwę (`INTENT_SCHEMA` nie ma pola Site), więc `_find` brał po cichu PIERWSZY pasujący
+i dokładał ad **do cudzego źródła**. Model zachował się przy tym wzorowo: napisał w
+`unclear`, że *zakłada* placement WP — to KOD ignorował tę niejednoznaczność.
+
+Naprawione: `_find_placement()` podnosi `Ambiguous`, a operacja jest **pomijana z czytelnym
+powodem** (wymienia kolidujące Site) zamiast lądować w pierwszym z brzegu. Ta sama zasada,
+przez którą creative adresujemy placementem i adem, nie samą nazwą. Potwierdzone ponownym
+przebiegiem na żywym modelu: `add_ad`/`add_creative` pominięte, `delete_ad` na jednoznacznym
+`Video` wykonany, placement Facebooka nietknięty. 7 testów regresyjnych.
+
+**Znane ograniczenie**: przez agenta nie da się teraz dodać ada do placementu o
+niejednoznacznej nazwie — trzeba ręcznie w UI (tam placementy są rozróżnialne po Site).
+Rozwiązaniem byłoby pole `site` w `INTENT_SCHEMA`, ale to zmiana kontraktu + promptu
++ testów; świadomie nie robione przy okazji.
+
+**Wniosek metodyczny, drugi raz w tej sesji**: weryfikacja na żywo znajduje rzeczy, których
+atrapa z definicji nie znajdzie — jej odpowiedzi pisze się pod własne założenia. Pierwszy raz
+tak wyszło przy realnym insercie do CM360 (`eventName` w clickTagu), drugi tutaj.
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
@@ -918,7 +955,7 @@ mówi po zapisie.
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
-   **Musi być 603/603.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 610/610.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest
@@ -963,7 +1000,8 @@ mówi po zapisie.
      deltą?
    * separator zestawu: Video ma `1080x1920-kv2` (myślnik), Display `1080x1920_kv2`
      (podkreślnik) — trzymamy niespójność klienta czy ujednolicamy?
-6. **Zmiany w promptach agentów wymagają jednego przebiegu na ŻYWYM modelu.** Czekają TRZY:
+6. ~~**Zmiany w promptach wymagają przebiegu na żywym modelu**~~ — **ZROBIONE 15.09.2026**,
+   patrz sekcja „PRZEBIEG AGENTÓW NA ŻYWYM MODELU". Historycznie czekały TRZY:
    konwencja `linia{N}-{ŹRÓDŁO}[-{słowo}]`, operacja `rename_creative_all` oraz reguły
    `zip.by_folder` (wymiary tylko z folderu, o którym mówi uwaga; rozwijanie schematu nazw).
    Atrapa webhooka tego nie wyłapie — jej odpowiedzi pisze się pod własne założenia.

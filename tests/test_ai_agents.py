@@ -452,5 +452,40 @@ except A.AgentError as e:
     check("brak URL -> AgentError mówi, co ustawić", "N8N_INTENT_URL" in str(e), True)
 srv.shutdown()
 
+print("\nNIEJEDNOZNACZNA NAZWA PLACEMENTU — wykryte na żywym modelu 15.09.2026:")
+# Jedno zlecenie może mieć dwa placementy o TEJ SAMEJ nazwie na różnych Site (`Display`
+# Facebooka obok `Display` WP). Operacje agenta niosą samą nazwę, więc kod brał po cichu
+# pierwszy z brzegu i dokładał ad do CUDZEGO źródła. Model zachował się wtedy poprawnie —
+# zgłosił niejednoznaczność w `unclear`; to kod ją ignorował.
+DUP = {"placements": [
+    {"name": "Display", "site": "CG_Facebook",
+     "ads": [{"name": "1200x628", "creatives": [{"name": "linia1"}]}]},
+    {"name": "Display", "site": "CG_WP",
+     "ads": [{"name": "970x200", "creatives": [{"name": "linia1"}]}]},
+    {"name": "Video", "site": "CG_Facebook",
+     "ads": [{"name": "1080x1080-kv1", "creatives": [{"name": "linia1"}]}]},
+]}
+dup_out, dup_log = A.apply_ops(DUP, [{"op": "add_ad", "placement": "Display",
+                                      "name": "750x300"}])
+check("operacja na niejednoznacznej nazwie jest POMIJANA, nie zgadywana",
+      dup_log[0]["ok"], False)
+check("...z powodem, który wymienia kolidujące Site",
+      all(s in dup_log[0]["detail"] for s in ("CG_Facebook", "CG_WP")), True)
+check("...i ŻADEN placement nie został zmieniony",
+      [[a["name"] for a in pl["ads"]] for pl in dup_out["placements"]],
+      [["1200x628"], ["970x200"], ["1080x1080-kv1"]])
+# jednoznaczna nazwa działa jak dotąd — blokada nie może zepsuć normalnego przypadku
+uniq_out, uniq_log = A.apply_ops(DUP, [{"op": "add_ad", "placement": "Video",
+                                        "name": "1200x628-kv1"}])
+check("jednoznaczna nazwa nadal działa", uniq_log[0]["ok"], True)
+check("...i dokłada ad we WŁAŚCIWYM placemencie",
+      [a["name"] for pl in uniq_out["placements"] if pl["name"] == "Video"
+       for a in pl["ads"]], ["1080x1080-kv1", "1200x628-kv1"])
+# to samo dotyczy operacji, które SZUKAJĄ placementu po nazwie z innego pola
+for op in ({"op": "rename_placement", "placement": "Display", "to": "X"},
+           {"op": "move_ad", "placement": "Display", "ad": "1200x628", "to": "Video"}):
+    lg = A.apply_ops(DUP, [op])[1][0]
+    check(f"{op['op']} też odmawia przy niejednoznacznej nazwie", lg["ok"], False)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
