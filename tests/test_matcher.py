@@ -1,4 +1,5 @@
 """Offline tests for the matching core, using the user's real example URLs."""
+import json
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -427,6 +428,66 @@ ids = M.resolve_lines([BASE + "?utm_content=12345", BASE + "?utm_content=67890"]
 check("unreadable URL tokens + folder labels -> usable LP names",
       [l["lpName"] for l in ids],
       ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
+
+print("\nREALNA mapa advertiserów vs adresy odczytane z produkcji 15.09.2026:")
+# Te adresy nie są wymyślone — każdy pochodzi ze strony docelowej stojącej na koncie
+# klienta pod advertiserem, który jest tu oczekiwany. Test pilnuje PLIKU CONFIGU, nie
+# tylko silnika: anchor poprawiony na podstawie 4611 adresów łatwo cofnąć jedną edycją
+# „porządkującą", a skutkiem byłby zapis do cudzej kampanii, którego CM360 nie cofa.
+_MAP = os.path.join(os.path.dirname(__file__), "..", "config", "advertiser_map.json")
+with open(_MAP, encoding="utf-8") as _f:
+    PROD_RULES = json.load(_f)["rules"]
+
+
+def resolves_to(url):
+    r = M.resolve_advertiser(url, PROD_RULES)
+    return r and r.get("advertiserId")
+
+
+for _url, _want, _why in [
+    ("https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/intensive/ds_prospecting_promo1",
+     "9188426", "intensive bije indywidualny/konta (3 człony > 2)"),
+    ("https://www.mbank.pl/lp2/2024/c1/indywidualny/konta/intensive/zmien/v3",
+     "9188426", "to samo, starszy rocznik"),
+    ("https://kontoosobiste.mbank.pl/intensive", "9188426", "intensive na własnej domenie"),
+    ("https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/festiwale/pol-and-rock",
+     "9080582", "zwykłe konta NIE są przechwytywane przez regułę intensive"),
+    ("https://www.mbank.pl/lp2/2019/indywidualny/karty-kredytowe/promocja2",
+     "9600236", "karty-kredytowe, nie karty"),
+    ("https://www.mbank.pl/portals/6.0/lp/dkm/msp-wosp", "9067410", "korporacje siedzą na lp/dkm"),
+    ("https://www.mbank.pl/lp2/2026/c1/indywidualny/ubezpieczenia/szkola-2/",
+     "9081506", "kampania NNW, na której robiliśmy weryfikację produkcji"),
+]:
+    check(_why, resolves_to(_url), _want)
+
+print("\nkolizja advertiserów — narzędzie pyta zamiast wybierać po cichu:")
+INTENSIVE_URL = "https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/intensive/promo"
+
+
+def cand_names(url):
+    return [r["advertiser"] for r in M.advertiser_candidates(url, PROD_RULES)]
+
+
+check("adres intensive daje DWÓCH kandydatów, dłuższy anchor pierwszy",
+      cand_names(INTENSIVE_URL), ["CG Intensive - Konta", "CG Indywidualny - Konta"])
+check("zwykłe konta to jeden kandydat — pytanie by tu tylko przeszkadzało",
+      cand_names("https://www.mbank.pl/lp2/2026/c1/indywidualny/konta/festiwale/rock"),
+      ["CG Indywidualny - Konta"])
+check("dwa anchory tego SAMEGO advertisera to nie kolizja (karty + karty-kredytowe)",
+      cand_names("https://www.mbank.pl/lp2/2019/indywidualny/karty-kredytowe/promocja"),
+      ["CG Indywidualny - Karty"])
+check("kandydat niesie anchor, po którym człowiek pozna, o co pyta",
+      [r.get("anchor") for r in M.advertiser_candidates(INTENSIVE_URL, PROD_RULES)],
+      [["indywidualny", "konta", "intensive"], ["indywidualny", "konta"]])
+check("resolve_advertiser NIE zmienia zachowania — dalej wygrywa najdłuższy",
+      M.resolve_advertiser(INTENSIVE_URL, PROD_RULES)["advertiserId"], "9188426")
+check("mLeasing/mProdukty: brak reguły = brak kandydata (świadomie, patrz _note)",
+      cand_names("https://mauto.pl/lista-pojazdow"), [])
+
+check("advertiser bez potwierdzonego anchora jest OZNACZONY, a nie udaje pewnego",
+      sorted(r["advertiser"] for r in PROD_RULES
+             if r.get("_note", "").startswith("ANCHOR MARTWY")),
+      ["CG mLeasing", "CG mProdukty"])
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

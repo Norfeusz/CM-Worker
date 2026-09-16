@@ -43,16 +43,23 @@ check("6 tags", len(p["tags"]), 6)
 print("\ndoklejanie: existing CG_GDN/Display, ad 300x250 already has linia3, "
       "ad 160x600 exists without it:")
 existing = {"CG_GDN": {"Display": {
-    "300x250": ["linia3", "linia1"],   # creative already there -> no-op
+    # kreacja tej linii JUŻ na adzie -> nowy materiał dostaje kreację z datą
+    "300x250": ["linia3", "linia1"],
     "160x600": ["linia1"],             # ad exists, our creative missing -> add creative
 }}}
-p2 = B.build_proposal("GDN", parsed, camp, line, existing=existing)
+p2 = B.build_proposal("GDN", parsed, camp, line, existing=existing,
+                      today=datetime.date(2026, 9, 16))
 ads = {a["name"]: a for a in p2["placements"][0]["ads"]}
 check("site existing", p2["site"]["status"], "existing")
 check("placement existing", p2["placements"][0]["status"], "existing")
-check("ad 300x250 existing + creative existing (no-op)",
-      (ads["300x250"]["status"], ads["300x250"]["creatives"][0]["status"]),
-      ("existing", "existing"))
+# ZMIANA 16.09.2026: dotąd był tu no-op i nowy materiał do już okodowanego ada po prostu
+# nie wchodził do struktury. Reguła użytkownika, odczytana z żywej kampanii 35398313.
+check("ad istnieje i niesie już tę linię -> kreacja z dzisiejszą datą",
+      (ads["300x250"]["status"], ads["300x250"]["creatives"][0]["name"],
+       ads["300x250"]["creatives"][0]["status"]),
+      ("existing", "linia3 16.09.26", "new"))
+check("datowana kreacja pamięta, z której linii wyszła",
+      ads["300x250"]["creatives"][0]["line"], "linia3")
 check("ad 160x600 existing + creative NEW (add creative)",
       (ads["160x600"]["status"], ads["160x600"]["creatives"][0]["status"]),
       ("existing", "new"))
@@ -857,6 +864,63 @@ check("nieznane źródło nie wybucha", B.lp_source("CośNowego"), "CośNowego")
 check("skrót + słowo klucza dają nazwę ze zlecenia",
       M.lp_name(3, B.lp_source("Facebook"), M.keyword_label("lookalike")),
       "linia3-FB-lookalike")
+
+print("\nnazwy adów z realnej dostawy BC (arkusz klienta, kampania 35398313):")
+# Zbiór ewaluacyjny, nie ilustracja: to 14 nazw plików z dwóch paczek i 14 nazw adów,
+# które trafficker z nich zrobił. Cała ścieżka nazywania naraz — ogon od wymiaru,
+# ucięcie opisu treści i przejęcie separatora od adów stojących już na placemencie.
+BC_EXISTING_ADS = ["1080x1350", "1080x1350 1", "1080x1350-1(kf)", "1200x1200",
+                   "1200x1200 1", "1200x1200 2-2", "1200x628", "1200x628 1",
+                   "1200x628 2-2", "1200x628 3-2", "1200x628-1(kf)"]
+BC = [
+    ("meta_1080x1350.png", "1080x1350"),
+    ("meta_1080x1350 copy.png", "1080x1350 copy"),
+    ("meta_1080x1350 copy 24m.png", "1080x1350 copy 24m"),
+    ("meta_1200x1200.png", "1200x1200"),
+    ("meta_1200x1200 copy 24m.png", "1200x1200 copy 24m"),
+    ("meta_1200x1200_1 copy.png", "1200x1200 1 copy"),
+    ("meta_1200x628_1 —.png", "1200x628 1"),
+    ("meta_1200x628_2 copy 24m.png", "1200x628 2 copy 24m"),
+    ("meta_1080x1350 copy 3 CEIDG Firmotowieracz.png", "1080x1350 copy 3"),
+    ("meta_1080x1350 copy 4 firmootwieracz i konto za 0 zł.png", "1080x1350 copy 4"),
+    ("meta_1080x1350 copy 5 firmootwieracz 500 zł.png", "1080x1350 copy 5"),
+    ("meta_1080x1350 copy 6 Firmootwieracz - pakiet na start.png", "1080x1350 copy 6"),
+    ("mBank_banery_discovery_1200x628_4 firmootwieracz.png", "1200x628_4"),
+    ("mBank_banery_discovery_1200x628_5 firmootwieracz.png", "1200x628_5"),
+]
+bad = []
+for fname, want in BC:
+    dim = parse_zip._dim(fname)
+    got = B.adopt_ad_separator(
+        B._trim_description(parse_zip._file_tag(fname, dim)) or dim, BC_EXISTING_ADS)
+    if got != want:
+        bad.append(f"{fname} -> {got!r}, oczekiwane {want!r}")
+check("14 nazw adów zgodnych z arkuszem klienta", bad, [])
+
+check("opis treści leci tylko po SPACJI — wariant z myślnikiem zostaje nietknięty",
+      [B._trim_description(t) for t in ["1080x1080-a", "1200x1200_karuzela-4",
+                                        "750x100_kv1", "1080x1920-kv2"]],
+      ["1080x1080-a", "1200x1200_karuzela-4", "750x100_kv1", "1080x1920-kv2"])
+check("bez rodziny ze spacją na koncie podkreślnik zostaje",
+      B.adopt_ad_separator("1200x628_4", BC_EXISTING_ADS), "1200x628_4")
+check("z rodziną ze spacją podkreślnik dołącza do niej",
+      B.adopt_ad_separator("1200x628_2 copy 24m", BC_EXISTING_ADS), "1200x628 2 copy 24m")
+check("pusta lista adów nic nie zmienia (nowy placement)",
+      B.adopt_ad_separator("1200x628_1", []), "1200x628_1")
+
+print("\nkreacja z datą, gdy ad już niesie tę linię:")
+check("format z konta: spacja + DD.MM.RR",
+      B.dated_creative_name("linia4-Konto", {"linia4-Konto"}, datetime.date(2026, 9, 16)),
+      "linia4-Konto 16.09.26")
+check("druga dostawa tego samego dnia dostaje licznik",
+      B.dated_creative_name("linia4-Konto", {"linia4-Konto", "linia4-Konto 16.09.26"},
+                            datetime.date(2026, 9, 16)),
+      "linia4-Konto 16.09.26 (2)")
+check("i trzecia",
+      B.dated_creative_name("linia4-Konto",
+                            {"linia4-Konto", "linia4-Konto 16.09.26",
+                             "linia4-Konto 16.09.26 (2)"}, datetime.date(2026, 9, 16)),
+      "linia4-Konto 16.09.26 (3)")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

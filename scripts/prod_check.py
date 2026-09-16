@@ -68,6 +68,16 @@ def check_links(svc, links):
               f"anchor {anchor or '—'})")
         if rule.get("_note"):
             print(f"   ⚠️  reguła oznaczona jako niepewna: {rule['_note']}")
+        # Kolizja anchorów: UI zapyta o wybór, więc narzędzie weryfikujące musi ją
+        # pokazać tak samo — inaczej „sprawdziłem, wychodzi Intensive" brzmiałoby jak
+        # rozstrzygnięcie, a jest nim tylko najdłuższy anchor.
+        cands = M.advertiser_candidates(link, rules)
+        if len(cands) > 1:
+            print("   🔀 KOLIZJA — ten adres pasuje do kilku advertiserów, narzędzie "
+                  "zapyta o wybór:")
+            for c in cands:
+                print(f"        {c.get('advertiser')} (id {c.get('advertiserId')}, "
+                      f"anchor {'/'.join(c.get('anchor') or []) or '—'})")
         try:
             adv = advertiser_for(rule)
         except RuntimeError as e:

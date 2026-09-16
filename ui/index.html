@@ -886,6 +886,11 @@
         } catch (e) { setSiteNote('Błąd: ' + e); }
       };
       const [suggestData, setSuggestData] = useState(null);
+      // Wybrany przez człowieka advertiser przy adresie pasującym do kilku. Trzymany
+      // osobno i doklejany do KAŻDEJ kolejnej przebudowy — inaczej zmiana kampanii albo
+      // odpowiedź o folderach zadałaby to samo pytanie jeszcze raz.
+      const [advChoice, setAdvChoice] = useState(null);
+      const [pickedAdv, setPickedAdv] = useState(null);
       const [noteErr, setNoteErr] = useState(false);
       const fail = msg => { setNoteErr(true); setNote(msg); };
       const runAnalyze = async (extra) => {
@@ -894,7 +899,7 @@
         if (!links.length && !files.length) return fail('Nie podałeś adresu LP ani nie wybrałeś pliku .zip');
         if (!links.length) return fail('Nie podałeś adresu LP');
         if (!files.length) return fail('Nie wybrałeś pliku .zip');
-        setBusy(true); setNote(''); setNoteErr(false); setSuggestData(null);
+        setBusy(true); setNote(''); setNoteErr(false); setSuggestData(null); setAdvChoice(null);
         // report upwards: a rebuild triggered from the campaign card or from the folder
         // answers must light up the same indicator as clicking "Analizuj" here
         if (onBusy) onBusy(extra ? 'Przebudowuję propozycję' : 'Buduję propozycję',
@@ -912,10 +917,13 @@
           const resp = await fetch('/api/build-proposal', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ links, keywords, source, sources, linkSources,
-                                   linkAudiences, message, zips, ...(extra || {}) }),
+                                   linkAudiences, message, zips,
+                                   ...(pickedAdv ? { advertiserId: pickedAdv } : {}),
+                                   ...(extra || {}) }),
           });
           const data = await resp.json();
           if (data.error) fail(data.error);
+          else if (data.advertiserChoice) { setAdvChoice(data.advertiserChoice); setNote(''); setNoteErr(false); }
           else if (data.suggestNewCampaign) { setSuggestData(data); setNote(''); setNoteErr(false); }
           // `extra` obecne = przebudowa istniejącego zlecenia (zmiana kampanii, odpowiedzi
           // o folderach) — taką da się cofnąć. Bez `extra` to nowe zlecenie od zera.
@@ -1125,6 +1133,35 @@
                                  border: '1px solid var(--danger-line)', fontWeight: 600 }}>⚠️ {note}</span>
                 : <span className="hint" style={{ marginLeft: 10 }}>{note}</span>)}
             </div>
+            {advChoice && (
+              <div className="qcard">
+                <div className="lead">🔀 Ten adres pasuje do kilku advertiserów</div>
+                <div className="hint" style={{ marginBottom: 8 }}>
+                  {advChoice.reason} Narzędzie celowo nie wybiera samo: na koncie klienta
+                  te same adresy są trafficowane pod obydwoma, a zapisu do złego
+                  advertisera CM360 nie cofa.
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {(advChoice.candidates || []).map(c => (
+                    <button key={c.advertiserId} className="btn" disabled={busy}
+                      onClick={() => { setPickedAdv(c.advertiserId);
+                                       runAnalyze({ advertiserId: c.advertiserId }); }}>
+                      {c.advertiser}
+                      <span className="hint" style={{ marginLeft: 6 }}>
+                        /{(c.anchor || []).join('/')}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {(advChoice.candidates || []).some(c => c.note) && (
+                  <div className="hint" style={{ marginTop: 8 }}>
+                    {(advChoice.candidates || []).filter(c => c.note).map(c => (
+                      <div key={c.advertiserId}>• <b>{c.advertiser}</b>: {c.note}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {suggestData && (
               <div className="qcard">
                 <div className="lead">🆕 Brak kampanii z pasującą ścieżką dla „{suggestData.advertiser}”</div>

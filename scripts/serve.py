@@ -184,7 +184,8 @@ def _parse_packages(packs, source, selected):
 
 def build_proposal(link, zip_path, source, message="", campaign_id=None, new_campaign=None,
                    links=None, folder_map=None, keywords=None, sources=None,
-                   row_sources=None, row_audiences=None, mail_links=None):
+                   row_sources=None, row_audiences=None, mail_links=None,
+                   advertiser_id=None):
     """Build the editable proposal for one order.
 
     `links` carries SEVERAL landing pages that all belong to the same campaign; `link`
@@ -209,7 +210,34 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
     if not resolved[0][1]:
         return {"error": "Żadna reguła nie dopasowała advertisera (tu wejdzie fallback AI)."}
     rule = resolved[0][1]
-    bad = [l for l, r in resolved if not r or r.get("advertiserId") != rule.get("advertiserId")]
+    # Kilku advertiserów pasuje do tego samego adresu (zagnieżdżone anchory). Długość
+    # anchora rozstrzyga to technicznie, ale produkcja pokazała, że merytorycznie nie ma
+    # tu jednej odpowiedzi — patrz `matcher.advertiser_candidates`. Pytamy więc człowieka
+    # zamiast wybierać po cichu. Na koncie testowym pytanie jest bez sensu: tam i tak
+    # wygrywa jedyny advertiser testowy, cokolwiek powie link.
+    cands = M.advertiser_candidates(link, rules)
+    if advertiser_id:
+        picked = next((r for r in cands if str(r.get("advertiserId")) == str(advertiser_id)),
+                      None)
+        if not picked:
+            return {"error": f"Advertiser {advertiser_id} nie pasuje do tego adresu."}
+        rule = picked
+    elif len(cands) > 1 and TEST_ADVERTISER is None:
+        return {"advertiserChoice": {
+            "link": link,
+            "reason": "Ten adres pasuje do kilku advertiserów i na koncie klienta obie "
+                      "wersje realnie występują — wskaż, do którego trafficujemy.",
+            "candidates": [{"advertiserId": str(r.get("advertiserId")),
+                            "advertiser": r.get("advertiser"),
+                            "anchor": r.get("anchor") or [],
+                            "note": r.get("_verified") or r.get("_note") or ""}
+                           for r in cands]}}
+    # Zgodność pozostałych adresów sprawdzamy po KANDYDATACH, nie po zwycięzcy domyślnym:
+    # gdy człowiek wybrał krótszy anchor (Konta zamiast Intensive), `resolve_advertiser`
+    # dalej wskazuje ten dłuższy i bez tego pierwszy link zostałby zgłoszony jako obcy.
+    want = str(rule.get("advertiserId"))
+    bad = [l for l in links
+           if want not in {str(r.get("advertiserId")) for r in M.advertiser_candidates(l, rules)}]
     if bad:
         return {"error": "Linki wskazują różnych advertiserów — jedno zlecenie musi "
                          f"dotyczyć jednego. Nie pasuje do „{rule.get('advertiser')}”: "
@@ -499,7 +527,8 @@ class Handler(BaseHTTPRequestHandler):
                               keywords=req.get("keywords"), sources=req.get("sources"),
                               row_sources=req.get("linkSources"),
                               row_audiences=req.get("linkAudiences"),
-                              mail_links=req.get("mailLinks"))
+                              mail_links=req.get("mailLinks"),
+                              advertiser_id=req.get("advertiserId"))
 
     def _create_site(self, req):
         """Add a Site to the account. dryRun=True -> plan only (still resolves the

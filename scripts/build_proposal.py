@@ -66,6 +66,89 @@ def lp_source(source, source_map=None):
     return (source_map.get(source) or {}).get("lpSource") or source
 
 
+# Człony, które po SPACJI zostają w nazwie ada: numeracja wariantu dostawcy (`copy`, `3`)
+# i krótkie kody formatu (`24m`). Wszystko inne po spacji to opis treści kreacji.
+_KEEP_AFTER_SPACE = re.compile(r"^(copy|\d+|\d+[a-z]{1,3})$", re.I)
+
+
+def _trim_description(tag):
+    """Utnij z ogona nazwy pliku OPIS treści kreacji, zostawiając samo rozróżnienie.
+
+    Dostawca dopisuje na końcu nazwy, co jest na banerze:
+    `meta_1080x1350 copy 3 CEIDG Firmotowieracz.png` -> ad `1080x1350 copy 3`,
+    `mBank_banery_discovery_1200x628_4 firmootwieracz.png` -> ad `1200x628_4`.
+    To nie jest wariant formatu, tylko notatka dla człowieka, i w gotowych tagach klienta
+    jej nie ma (sprawdzone na 14 nazwach adów z arkusza BC - Konto i Firmootwieracz).
+
+    Cięcie dotyczy WYŁĄCZNIE członów oddzielonych SPACJĄ. To celowo wąskie: cała dotychczasowa
+    konwencja wariantów skleja je myślnikiem albo podkreślnikiem (`1080x1080-a`,
+    `1200x1200_karuzela-4`, `750x100_kv1`) i tamtych nazw ta reguła nie dotyka — inaczej
+    zjadłaby `kv1` i `karuzela`, czyli dokładnie to, co rozróżnia materiał.
+
+    Kompromis, świadomy: wariant zapisany słowem po spacji (`1200x628 wersja B`) zostanie
+    ucięty jak opis. Wtedy dwie jednostki walczą o jedną nazwę ada i propozycja niesie
+    ostrzeżenie o utracie materiału — dlatego cięcie jest tutaj, przy NAZYWANIU ada,
+    a nie w parserze: jednostki zostają rozróżnione, ostrzeżenie ma się na czym oprzeć.
+    """
+    if not tag or " " not in tag:
+        return tag
+    head, *rest = tag.split()
+    out = [head]
+    for t in rest:
+        if not _KEEP_AFTER_SPACE.match(t):
+            break
+        out.append(t)
+    return " ".join(out)
+
+
+def adopt_ad_separator(name, existing_ads):
+    """Przejmij separator po wymiarze od adów, które JUŻ są na tym placemencie.
+
+    Ta sama dostawa potrafi nieść oba zapisy i oba są poprawne — w arkuszu klienta
+    `meta_1200x628_2 copy 24m.png` wyszło jako `1200x628 2 copy 24m` (podkreślnik na
+    spację), a `...1200x628_4 firmootwieracz.png` jako `1200x628_4` (podkreślnik został).
+    Rozstrzyga nie paczka, tylko KONTO: gdy na placemencie stoi już rodzina `1200x628 2`
+    (choćby `1200x628 2-2`), nowy wariant dołącza do niej; gdy `1200x628 4` nie istnieje,
+    zostaje pisownia z pliku. Trafficker dopisuje do tego, co widzi, i tak samo robimy my.
+
+    Zweryfikowane na 5 przypadkach z realnej kampanii 35398313 (wszystkie trafione).
+    """
+    m = re.match(r"^(\d+x\d+)_(\S+)", name or "")
+    if not m:
+        return name
+    dim, token = m.group(1), m.group(2)
+    if any(a.startswith(f"{dim} {token}") for a in existing_ads or ()):
+        return name.replace(f"{dim}_", f"{dim} ", 1)
+    return name
+
+
+def dated_creative_name(base, attached, today=None):
+    """Nazwa kreacji dla materiału dołożonego do ada, który TĘ linię już niesie.
+
+    Reguła użytkownika, potwierdzona na żywej kampanii 35398313: gdy ad istnieje i jest
+    do niego podpięta kreacja tej samej linii, nie da się podpiąć jej drugi raz — powstaje
+    NOWA kreacja z tym samym członem i dzisiejszą datą (`linia4-Konto 16.09.26`). Stara
+    zostaje podpięta; na koncie ad `1200x628 1` niesie dziś `linia4-Konto`,
+    `linia4-Konto 09.07.26` i `linia4-Konto 16.09.26` obok siebie, czyli tak samo
+    postąpiono w lipcu.
+
+    Spacja przed datą i format `DD.MM.RR` są z konta, nie z naszej konwencji nazw LP
+    (tam separatorem jest myślnik) — przy rozjeździe wygrywa produkcja.
+
+    Licznik `(2)` przy drugiej dostawie tego samego dnia to decyzja użytkownika: tag ma
+    dać się jednoznacznie przypisać do materiału, który go wywołał. Skutek uboczny, który
+    trzeba znać: PONOWNE zbudowanie tej samej propozycji tego samego dnia też policzy się
+    jako druga dostawa — dlatego widać to w planie przed zapisem.
+    """
+    stamp = (today or datetime.date.today()).strftime("%d.%m.%y")
+    name = f"{base} {stamp}"
+    n = 2
+    while name in (attached or ()):
+        name = f"{base} {stamp} ({n})"
+        n += 1
+    return name
+
+
 def _ad_name(unit, ad_key, drop_variant=False):
     """Nazwa ada z jednostki paczki. `drop_variant` wycina folder z nazwy — patrz
     `drop_variant_in()`, które rozstrzyga, kiedy jest on w niej zbędny.
@@ -75,7 +158,7 @@ def _ad_name(unit, ad_key, drop_variant=False):
     więc zastępuje OBA — inaczej karuzela wychodziła jako `1200x1200_karuzela-4_4`.
     Sprawdzone na 28 nazwach adów z gotowego arkusza klienta (Promocja NNW).
     """
-    tag = unit.get("file_tag")
+    tag = _trim_description(unit.get("file_tag"))
     if ad_key == "variant":
         # DemGen ignoruje wymiar: w gotowych tagach klienta cały zestaw `kv1-demgen/`
         # (cztery wymiary) to JEDEN ad `kv1`. Zestaw jest tu wariantem, gdy folder
@@ -915,6 +998,8 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                 # `adSuffix` mode: one placement, the format separates ads (160x600_gif)
                 name = (f"{base}_{u['_format']}"
                         if mode == "adSuffix" and u.get("_format") else base)
+                # separator po wymiarze przejmujemy od adów, które już tu stoją
+                name = adopt_ad_separator(name, ex_plc or ())
                 slot = ads.setdefault(name, {"unit": u, "by_line": {}})
                 for i in u["_lines"]:
                     prev = slot["by_line"].get(i)
@@ -943,10 +1028,18 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
                     if (multi_src and ln.get("source")
                             and ln["source"].lower() != (g_token or "").lower()):
                         continue           # LP innego źródła — nie na tym placemencie
-                    cr = {"name": ln["creativeName"], "type": u.get("type"),
+                    # Kreacja tej linii JEST już na tym adzie: drugi raz podpiąć się jej
+                    # nie da, więc materiał dostaje własną kreację z dzisiejszą datą.
+                    # Bez tego nowa dostawa do istniejącego ada kończyła się jako „nic do
+                    # zrobienia" i po prostu nie wchodziła do struktury.
+                    cr_name = ln["creativeName"]
+                    if cr_name in ex_cre:
+                        cr_name = dated_creative_name(cr_name, ex_cre, today)
+                    cr = {"name": cr_name, "type": u.get("type"),
                           "packaged": u.get("packaged", False),
                           "source_path": u.get("source_path"),
-                          "status": _status(ln["creativeName"], ex_cre)}
+                          "line": ln["creativeName"],
+                          "status": _status(cr_name, ex_cre)}
                     if multi:  # the orchestrator needs an explicit LP per creative
                         cr["lpName"], cr["lpUrl"] = ln["lpName"], ln["url"] or ""
                     creatives.append(cr)

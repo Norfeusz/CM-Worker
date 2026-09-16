@@ -73,8 +73,8 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`, `test_promote.py`
-(**610/610 zielone na 15.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 94, proposal 185, orchestrate 55, create_site 15,
+(**637/637 zielone na 16.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 108, proposal 194, orchestrate 59, create_site 15,
 ai_agents 111, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
@@ -542,6 +542,36 @@ Jeden kod, przełącznik `CM_ENV` — **nigdy dwie kopie repo**, bo te zawsze si
 * **`GET /api/env`** + wskaźnik w nagłówku UI: 🧪 TEST (dyskretny) / 🔴 PRODUKCJA (żółty).
   Widoczny ZAWSZE, nie tylko po zbudowaniu propozycji.
 
+### Mapa advertiserów SPRAWDZONA NA PRODUKCJI (15.09.2026)
+Metoda, którą warto powtórzyć przy każdej zmianie mapy: bierzemy adresy LP, o których konto
+MÓWI, że należą do advertisera X, i sprawdzamy, czy `resolve_advertiser` odsyła je do X.
+**4611 realnych adresów**; trafność wzrosła z 2846 do 3416, błędne przypisania spadły z 336
+do 261. Trzy anchory nie trafiały w NIC i zostały poprawione dowodem, nie domysłem:
+* `indywidualny/karty` → realnie **`karty-kredytowe`** (180 z 182 adresów),
+* `korporacje/konta` → realnie **`lp/dkm`** (`/portals/6.0/lp/dkm/msp-wosp`, 315 z 316),
+* `intensive` → doszedł trzyczłonowy **`indywidualny/konta/intensive`** (107 adresów).
+
+**`mLeasing` i `mProdukty` zostają MARTWE i to jest decyzja, nie zaległość.** Żaden ich adres
+nie zawiera tych członów, a domena nie rozstrzyga — mProdukty ma te same hosty co mLeasing
+(`mauto.pl` 247 vs 50, `mleasing.pl` 101 vs 8). Taki link po prostu nie dopasuje advertisera
+i trafficker wskaże go ręcznie. Lepsze niż reguła zgadująca, bo zapis idzie do konta klienta.
+
+**KOLIZJA advertiserów → narzędzie PYTA** (`matcher.advertiser_candidates`). Adresy
+`/indywidualny/konta/intensive/...` są trafficowane pod obydwoma advertiserami: do 2024
+wyłącznie pod Intensive (89), w 2026 przewaga po stronie Kont (25 do 16), ten sam adres
+`ds_prospecting_promo1` wisi pod jednym i pod drugim. Najdłuższy anchor rozstrzyga to
+TECHNICZNIE, ale odpowiedzi nie ma w linku, więc `/api/build-proposal` zwraca
+`advertiserChoice` i UI pyta; wybór wraca jako `advertiserId` i **klei się do kolejnych
+przebudów**, żeby zmiana kampanii nie zadała tego samego pytania drugi raz. Na koncie
+testowym pytanie się nie pojawia — tam i tak wygrywa jedyny advertiser testowy.
+`_verified`/`_note` przy każdej regule mówią, na czym stoi; test regresyjny przypina mapę
+do realnych adresów (`test_matcher.py`), bo „porządkująca" edycja configu cofnęłaby to cicho.
+
+**Site na produkcji: 6/6 zgadza się co do znaku** (CG_GDN 5271077, CG_Facebook 5138485,
+CG_Demand_Gen 10682870, CG_Programmatic 5135321, mailsales.pl 4218739, WP.pl 3080134).
+Uwaga: na koncie stoją też mylące sąsiady (`GDN` 3641930, `facebook` 6141688, `programmatic`
+7673678) — porównanie nazw jest dokładne, więc literówka w configu = „Site nie istnieje".
+
 ### `scripts/prod_check.py` — weryfikacja wyszukiwarki na produkcji (read-only)
 Narzędzie pośrednie, **fizycznie bez ścieżki zapisu** — lepszy pierwszy kontakt z kontem
 klienta niż całe UI. `CM_ENV=prod py scripts/prod_check.py <link>` pokazuje rozwiązanego
@@ -867,6 +897,48 @@ Rozwiązaniem byłoby pole `site` w `INTENT_SCHEMA`, ale to zmiana kontraktu + p
 atrapa z definicji nie znajdzie — jej odpowiedzi pisze się pod własne założenia. Pierwszy raz
 tak wyszło przy realnym insercie do CM360 (`eventName` w clickTagu), drugi tutaj.
 
+## DOSTAWA DO ISTNIEJĄCEJ STRUKTURY (16.09.2026) — kampania BC, Site CG_Facebook
+
+Sesja treningowa na dostawie, w której **kampania już miała kreacje dla kodowanych linii**
+(linia4 i 5). Materiał: dwie paczki (`FRC.zip`, `BC- Meta Ads.zip`) + arkusz klienta z 14
+tagami. Arkusz to **delta** — na `Display` stoi dziś 40 adów, arkusz pokazuje te 14, których
+dotknęło zlecenie. Odczyt żywej kampanii **35398313** rozstrzygnął trzy rzeczy, których
+z samego arkusza nie dało się wyczytać.
+
+* **Kreacja z datą, gdy ad już niesie tę linię.** Tej samej kreacji nie da się podpiąć do
+  ada dwa razy, więc nowy materiał dostaje własną: `linia4-Konto` → `linia4-Konto 16.09.26`
+  (spacja + `DD.MM.RR`, **nie** myślnik naszej konwencji LP). Stara **zostaje podpięta** —
+  na koncie ad `1200x628 1` niesie obok siebie `linia4-Konto`, `linia4-Konto 09.07.26`
+  (lipcowa dostawa, czyli reguła działa u nich od dawna) i `linia4-Konto 16.09.26`.
+  `build_proposal.dated_creative_name()`. Przy powtórce tego samego dnia dochodzi licznik
+  `(2)` — decyzja usera, żeby tag dało się przypisać do materiału, który go wywołał.
+  **Skutek uboczny do zapamiętania:** ponowne zbudowanie TEJ SAMEJ propozycji tego samego
+  dnia też liczy się jako druga dostawa. Widać to w dry-runie przed zapisem — i to jedyny
+  bezpiecznik, bo narzędzie nie odróżnia nowego materiału od powtórki tego samego zipa.
+  Zniknął przy okazji status „no-op" dla pary (ad istnieje, kreacja podpięta).
+* **Opis treści kreacji wypada z nazwy ada.** `meta_1080x1350 copy 3 CEIDG Firmotowieracz.png`
+  → `1080x1350 copy 3`; `...1200x628_4 firmootwieracz.png` → `1200x628_4`. Zostają człony
+  `copy`, liczby i kody typu `24m`. `build_proposal._trim_description()` tnie **wyłącznie po
+  SPACJI** — cała dotychczasowa konwencja wariantów skleja je myślnikiem albo podkreślnikiem
+  (`1080x1080-a`, `750x100_kv1`, `1200x1200_karuzela-4`) i tamtych nazw to nie dotyka;
+  inaczej zjadłoby `kv1` i `karuzela`. Cięcie jest przy NAZYWANIU ada, nie w parserze:
+  jednostki zostają rozróżnione, więc gdy dwa opisy zwiną się w jedną nazwę, zadziała
+  istniejące ostrzeżenie o utracie materiału zamiast cichego nadpisania.
+* **Separator po wymiarze przejmujemy od adów, które już stoją na placemencie.** Ta sama
+  dostawa niosła oba zapisy i oba są poprawne: `meta_1200x628_2 copy 24m` → `1200x628 2 copy
+  24m`, ale `...1200x628_4 firmootwieracz` → `1200x628_4`. Rozstrzyga KONTO, nie paczka —
+  gdy istnieje już rodzina `1200x628 2` (choćby `1200x628 2-2`), nowy wariant do niej
+  dołącza; gdy `1200x628 4` nie istnieje, zostaje pisownia z pliku.
+  `build_proposal.adopt_ad_separator()`, 5/5 na realnych przypadkach.
+* **Wyszukiwanie LP ignoruje wielkość liter** (`Orchestrator._find_lp`). Ta jedna kampania
+  ma 14 stron `Linia4-FB-Konto` z wielkiej i jedną `linia7-FB-rozchodniak` z małej. Nasza
+  konwencja generuje małą, a porównanie było dokładne — narzędzie utworzyłoby **DRUGIE LP
+  na ten sam adres**, czego w CM360 nie da się cofnąć. Nazw na koncie nie zmieniamy:
+  do struktury wchodzi id i pisownia **taka, jaka tam jest**, a log mówi o rozjeździe.
+
+Test regresyjny odtwarza wszystkie 14 nazw adów z arkusza (`test_proposal.py`), plus pisownia
+LP w `test_orchestrate.py`. Materiały leżą w `data/samples/bc/` (gitignored).
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
@@ -955,7 +1027,7 @@ tak wyszło przy realnym insercie do CM360 (`eventName` w clickTagu), drugi tuta
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
-   **Musi być 610/610.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 637/637.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest

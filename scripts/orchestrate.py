@@ -90,7 +90,9 @@ class Orchestrator:
         Zwraca {lpName: [gdzie to jest użyte]} — nazwy miejsc, żeby użytkownik wiedział,
         któremu creative dopisać adres, a nie tylko że „czegoś brakuje”.
         """
-        known = set(state.get("lps_by_name") or {})
+        # bez wzgl. na wielkość liter — tak samo jak `_ensure_lp`, inaczej narzędzie
+        # żądałoby adresu dla LP, które na koncie JEST, tylko pisane inaczej
+        known = {k.lower() for k in (state.get("lps_by_name") or {})}
         bad = {}
         pairs = [(proposal["line"]["lpName"], proposal["line"].get("url"), "LP linii")]
         for pl in proposal.get("placements") or []:
@@ -99,19 +101,41 @@ class Orchestrator:
                     name, url = Orchestrator._lp_key(proposal, cr)
                     pairs.append((name, url, f"{pl['name']}/{ad['name']}/{cr['name']}"))
         for name, url, where in pairs:
-            if not (url or "").strip() and name not in known:
+            if not (url or "").strip() and (name or "").lower() not in known:
                 bad.setdefault(name, [])
                 if where not in bad[name]:
                     bad[name].append(where)
         return bad
 
+    @staticmethod
+    def _find_lp(by_name, name):
+        """(istniejąca nazwa, id) szukane BEZ WZGLĘDU NA WIELKOŚĆ LITER, inaczej (None, None).
+
+        Konta klienta nie trzymają się jednej pisowni: kampania 35398313 ma 14 stron
+        `Linia4-FB-Konto` z wielkiej litery i jedną `linia7-FB-rozchodniak` z małej.
+        Nasza konwencja generuje małą, a porównanie dokładne znaczyło, że narzędzie
+        utworzyłoby DRUGĄ stronę docelową na ten sam adres zamiast użyć istniejącej —
+        i dopiero wtedy byłoby widać problem, bo w CM360 LP się nie usuwa.
+
+        Szukamy więc bez względu na wielkość liter, ale NIE zmieniamy niczego na koncie:
+        zwracana jest nazwa taka, jaka tam stoi, i to jej id wchodzi do struktury.
+        """
+        if name in by_name:
+            return name, by_name[name]
+        low = (name or "").lower()
+        return next(((k, v) for k, v in by_name.items() if k.lower() == low), (None, None))
+
     def _ensure_lp(self, name, url, state):
         """Resolve an existing landing page by name (in campaign) or name+url (on the
         advertiser), else create it. Returns (lpId, alreadyInThisCampaign)."""
-        in_campaign = name in state["lps_by_name"]
-        lp_id = state["lps_by_name"].get(name) or state["adv_lp_by_name_url"].get((name, url))
+        found, lp_id = self._find_lp(state["lps_by_name"], name)
+        in_campaign = found is not None
+        if not lp_id:
+            adv = {k[0]: v for k, v in state["adv_lp_by_name_url"].items() if k[1] == url}
+            found, lp_id = self._find_lp(adv, name)
         if lp_id:
-            self._rec("REUSE", "landingPage", name, lp_id)
+            self._rec("REUSE", "landingPage", found, lp_id,
+                      "" if found == name else f"(na koncie pisane {found!r}, u nas {name!r})")
         else:
             r = W.landing_page(self.svc, self.pid, self.adv, name, url, dry_run=self.dry)
             lp_id = r.get("id", "(new)")

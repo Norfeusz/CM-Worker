@@ -1,22 +1,27 @@
 {
-  "_comment": "Advertiser resolution PROTOTYPE. Matched by URL path segments (anchor), ignoring /lp2/2026/c1/-style prefixes and utm. Longest anchor wins. To be finalized when testing on production. 'host' rules are for the test account.",
+  "_comment": "Advertiser resolution. Matched by URL path segments (anchor), ignoring /lp2/2026/c1/-style prefixes and utm. Longest anchor wins. 'host' rules are for the test account.",
+  "_verified": "2026-09-15, produkcja (profil 9765911), 4611 realnych adresów LP odczytanych z konta i przepuszczonych przez resolve_advertiser. Metoda: bierzemy adresy, o których konto MÓWI, że należą do advertisera X, i sprawdzamy, czy kod odsyła je do X. Anchory poprawione wyłącznie tam, gdzie dane to wymusiły — nie 'na czuja'.",
+  "_agencyCode": "Człon /lp2/{rok}/{KOD}/ to kod agencji: c1 = Cube Group (nasze), m1 = Carat, w1 = trzecia. NIE jest to reguła twarda i dlatego nie stoi w kodzie: konto ma 49 adresów `m1` pod naszym advertiserem Ubezpieczenia i 9 adresów `c1` pod Carat. Traktować jako sygnał ostrzegawczy, nie filtr.",
   "rules": [
     { "host": "mediaszop.netlify.app", "advertiserId": "11992166", "advertiser": "Reklamodawca testowy - na potrzeby szkolenia", "profileId": "9556074", "anchor": [] },
 
     { "anchor": ["indywidualny", "ubezpieczenia"], "advertiserId": "9081506", "advertiser": "CG Indywidualny - Ubezpieczenia", "profileId": "9765911" },
-    { "anchor": ["indywidualny", "konta"],          "advertiserId": "9080582", "advertiser": "CG Indywidualny - Konta",          "profileId": "9765911" },
+    { "anchor": ["indywidualny", "konta"],          "advertiserId": "9080582", "advertiser": "CG Indywidualny - Konta",          "profileId": "9765911", "_verified": "1775 z 1942 stron docelowych; 32 adresy `konta/intensive` są tu w kolizji z regułą Intensive (w 2026 to TU jest ich więcej) — narzędzie pyta." },
     { "anchor": ["indywidualny", "kredyty"],        "advertiserId": "9081500", "advertiser": "CG Indywidualny - Kredyty",        "profileId": "9765911" },
     { "anchor": ["indywidualny", "inwestycje"],     "advertiserId": "12798457","advertiser": "CG Indywidualny - Inwestycje",     "profileId": "9765911" },
-    { "anchor": ["indywidualny", "karty"],          "advertiserId": "9600236", "advertiser": "CG Indywidualny - Karty",          "profileId": "9765911" },
-    { "anchor": ["indywidualny", "uslugi"],         "advertiserId": "9524778", "advertiser": "CG Indywidualny - Uslugi",         "profileId": "9765911" },
+    { "anchor": ["indywidualny", "karty-kredytowe"],"advertiserId": "9600236", "advertiser": "CG Indywidualny - Karty",          "profileId": "9765911", "_verified": "180 z 182 adresów LP tego advertisera" },
+    { "anchor": ["indywidualny", "karty"],          "advertiserId": "9600236", "advertiser": "CG Indywidualny - Karty",          "profileId": "9765911", "_note": "Na koncie nie ma ANI JEDNEGO adresu z członem `karty` — realnie jest `karty-kredytowe` (reguła wyżej). Zostawione na zapas dla przyszłych adresów; jeśli do go-live się nie pojawią, do usunięcia." },
+    { "anchor": ["indywidualny", "uslugi"],         "advertiserId": "9524778", "advertiser": "CG Indywidualny - Usługi",         "profileId": "9765911", "_note": "ANCHOR NIEPOTWIERDZONY: 40 adresów tego advertisera nie ma członu `uslugi` — to w większości `indywidualny/inwestycje` i artykuły `mbank-news`. Reguła nie zaszkodzi (odpala się tylko na dosłownym `indywidualny/uslugi`), ale nie ma dowodu, że kiedykolwiek odpali." },
     { "anchor": ["firmy", "konta"],                 "advertiserId": "9091477", "advertiser": "CG Firmy - Konta",                 "profileId": "9765911" },
     { "anchor": ["firmy", "kredyty"],               "advertiserId": "9067422", "advertiser": "CG Firmy - Kredyty",               "profileId": "9765911" },
     { "anchor": ["firmy", "ksiegowosc"],            "advertiserId": "9081503", "advertiser": "CG Firmy - Ksiegowosc",            "profileId": "9765911" },
     { "anchor": ["firmy", "zakladanie-firmy"],      "advertiserId": "9200231", "advertiser": "CG Firmy - Zakladanie firmy",      "profileId": "9765911" },
-    { "anchor": ["korporacje", "konta"],            "advertiserId": "9067410", "advertiser": "CG Korporacje - konta",            "profileId": "9765911" },
+    { "anchor": ["lp", "dkm"],                      "advertiserId": "9067410", "advertiser": "CG Korporacje - konta",            "profileId": "9765911", "_verified": "315 z 316 adresów: /portals/6.0/lp/dkm/msp-wosp. Człon `korporacje` nie występuje w żadnym." },
+    { "anchor": ["korporacje", "konta"],            "advertiserId": "9067410", "advertiser": "CG Korporacje - konta",            "profileId": "9765911", "_note": "Zero adresów na koncie; zostawione na zapas, realny kształt to `lp/dkm` (reguła wyżej)." },
 
-    { "anchor": ["intensive"], "advertiserId": "9188426", "advertiser": "CG Intensive - Konta", "profileId": "9765911", "_note": "CONFLICT: example link is /indywidualny/konta/intensive/... which also matches indywidualny/konta. Needs a disambiguation rule at go-live." },
-    { "anchor": ["mleasing"],  "advertiserId": "14924722","advertiser": "CG mLeasing",  "profileId": "9765911", "_note": "anchor guessed; confirm real URL pattern at go-live" },
-    { "anchor": ["mprodukty"], "advertiserId": "9271638", "advertiser": "CG mProdukty", "profileId": "9765911", "_note": "anchor guessed; confirm real URL pattern at go-live" }
+    { "anchor": ["indywidualny", "konta", "intensive"], "advertiserId": "9188426", "advertiser": "CG Intensive - Konta", "profileId": "9765911", "_verified": "107 stron docelowych; do 2024 WSZYSTKIE takie adresy szły tutaj (89 szt.), ale w 2026 przewaga jest po stronie Kont (16 do 25) — ten sam adres wisi pod obydwoma, więc narzędzie pyta zamiast wybierać." },
+    { "anchor": ["intensive"], "advertiserId": "9188426", "advertiser": "CG Intensive - Konta", "profileId": "9765911", "_verified": "99 adresów: /intensive na kontoosobiste.mbank.pl i /lp2/2019/intensive/..." },
+    { "anchor": ["mleasing"],  "advertiserId": "14924722","advertiser": "CG mLeasing",  "profileId": "9765911", "_note": "ANCHOR MARTWY — DO DECYZJI CZŁOWIEKA. Ten advertiser nie ma ani jednego adresu z członem `mleasing`; jego 58 adresów to mauto.pl (50) i mleasing.pl (8), a ścieżki to /lista-pojazdow, /nowe-samochody. DOMENA TEŻ NIE ROZSTRZYGA: mProdukty ma te same hosty (mauto.pl 247, mleasing.pl 101). Bez reguły od traffickera nie da się tych dwóch rozdzielić z samego linku." },
+    { "anchor": ["mprodukty"], "advertiserId": "9271638", "advertiser": "CG mProdukty", "profileId": "9765911", "_note": "ANCHOR MARTWY — DO DECYZJI CZŁOWIEKA. Zero adresów z członem `mprodukty` z 546. Najczęstsze: mauto.pl/lista-pojazdow, /mauto/uzywacze, /lp2/{rok}/w1/kampania-mokazje-zakupy. Konflikt hostów z mLeasing — patrz reguła wyżej." }
   ]
 }

@@ -80,6 +80,40 @@ def resolve_advertiser(url, rules):
     return best
 
 
+def advertiser_candidates(url, rules):
+    """Wszyscy advertiserzy, których reguła pasuje do adresu — najdłuższy anchor pierwszy.
+
+    `resolve_advertiser` rozstrzyga zagnieżdżenie anchorów długością
+    (`indywidualny/konta/intensive` bije `indywidualny/konta`) i to rozstrzygnięcie jest
+    poprawne TECHNICZNIE, ale nie merytorycznie. Odczyt produkcji 15.09.2026 pokazał, że
+    te same adresy `/indywidualny/konta/intensive/...` są trafficowane pod OBYDWOMA
+    advertiserami: do 2024 wyłącznie pod „CG Intensive - Konta" (89 stron docelowych),
+    a w 2026 przewaga jest po stronie „CG Indywidualny - Konta" (25 do 16) — ten sam
+    adres `ds_prospecting_promo1` wisi pod jednym i pod drugim.
+
+    Żadna reguła z linku tego nie rozstrzygnie, bo rozstrzygnięcia nie ma w linku.
+    Dlatego ta funkcja zwraca MATERIAŁ DO PYTANIA, a nie odpowiedź: przy kilku kandydatach
+    wybiera człowiek, a cicha wygrana dłuższego anchora oznaczałaby zapis w cudzej
+    kampanii — czego CM360 nie cofa.
+
+    Po jednym wpisie na advertisera (ten sam advertiser bywa opisany kilkoma anchorami,
+    np. `karty` i `karty-kredytowe` — to nie jest niejednoznaczność).
+    """
+    host, segs = canonical(url)
+    best = {}
+    for r in rules:
+        aid = str(r.get("advertiserId"))
+        if r.get("host"):
+            if host == r["host"].lower():
+                best.setdefault(aid, (0, r))
+            continue
+        anchor = r.get("anchor", [])
+        if _find_anchor(segs, anchor) >= 0:
+            if aid not in best or len(anchor) > best[aid][0]:
+                best[aid] = (len(anchor), r)
+    return [r for _, r in sorted(best.values(), key=lambda p: -p[0])]
+
+
 def _common_leading(a, b):
     c = 0
     for x, y in zip(a, b):

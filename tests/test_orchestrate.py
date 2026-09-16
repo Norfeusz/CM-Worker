@@ -230,6 +230,22 @@ check("...i wskazuje wszystkie creative, które z niego korzystają (to skutek, 
 check("gdy wszystko ma adresy — brak zastrzeżeń",
       Orchestrator.lp_urls_missing(proposal, state), {})
 
+print("\nPISOWNIA LP: konto klienta miesza wielkość liter w jednej kampanii\n"
+      "(35398313: 14x `Linia4-FB-Konto`, ale `linia7-FB-rozchodniak`) — porównanie\n"
+      "dokładne tworzyło DRUGIE LP na ten sam adres, a LP w CM360 się nie usuwa:")
+check("LP znalezione mimo innej wielkości liter — z nazwą TAKĄ, JAKA JEST na koncie",
+      Orchestrator._find_lp({"Linia4-FB-Konto": "LP1"}, "linia4-FB-Konto"),
+      ("Linia4-FB-Konto", "LP1"))
+check("dokładne trafienie ma pierwszeństwo, gdy stoją obie pisownie",
+      Orchestrator._find_lp({"Linia4-FB-Konto": "LP1", "linia4-FB-Konto": "LP2"},
+                            "linia4-FB-Konto"),
+      ("linia4-FB-Konto", "LP2"))
+check("czego nie ma, tego nie ma — nadal CREATE",
+      Orchestrator._find_lp({"Linia4-FB-Konto": "LP1"}, "linia5-FB-Ceidg"), (None, None))
+state_inna_pisownia = dict(state, lps_by_name={"LINIA2-gdn-REFINANS": "LP99"})
+check("...i nie żądamy adresu dla LP, które na koncie jest, tylko pisane inaczej",
+      Orchestrator.lp_urls_missing(prop_nourl, state_inna_pisownia), {})
+
 print("\nKILKA ŹRÓDEŁ w jednym zleceniu — o Site decyduje PLACEMENT, nie zlecenie "
       "(paczka z folderami GDN/ + Programmatic/):")
 prop_ms = B.build_proposal("GDN", parsed, camp, line,
