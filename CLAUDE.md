@@ -746,10 +746,16 @@ Nazwy Ad/Placement pochodzą z konwencji zip+source; linie/audience pochodzą z 
   (flaga `--open` w `serve.py` — tylko serwer wie, kiedy gniazdo jest gotowe).
 - ✅ **Node naprawiony** — patrz sekcja o Node. Build React odblokowany.
 
-### Stan repo na koniec sesji 05.08.2026
-Gałąź **`feat/campaign-site-and-ai-agents`** (wypchnięta), `main` nietknięty na initial
-commicie. **PR nadal nieotwarty** — `gh` nie jest zainstalowany, user otwiera klikiem:
+### Stan repo (sprawdzony 17.09.2026 — NIE przepisuj tego z pamięci, zweryfikuj)
+Gałąź **`feat/campaign-site-and-ai-agents`**, wypchnięta do `a17507c`. **PR #1 został już
+otwarty i SCALONY** — `origin/main` stoi na jego merge commicie `4762428`, a nie na initial
+commicie (tak było napisane tutaj do 17.09 i wprowadziło w błąd). Po tamtym scaleniu na
+gałęzi przybyły **32 commity**, więc do przeniesienia ich na `main` potrzebny jest KOLEJNY PR.
+`gh` nie jest zainstalowany, user otwiera klikiem:
 `https://github.com/Norfeusz/CM-Worker/pull/new/feat/campaign-site-and-ai-agents`
+
+Sprawdzaj to poleceniem, nie pamięcią:
+`git log --oneline origin/main..origin/feat/campaign-site-and-ai-agents`
 
 Working tree czysty. `start.bat` (adresy webhooków + token) jest gitignorowany i **nie ma
 go w historii** — sprawdzone. **Przed każdym commitem skanuj repo na `cg-pl.app.n8n.cloud`,
@@ -1060,7 +1066,8 @@ realnym zapisem z `dryRun:false`, zamiast najpierw na czystej funkcji. Bramka ni
 więc zapis przeszedł i na koncie testowym (kampania `karta_lodz_summer_festiwal_2026- testy`)
 powstały: LP `linia9-FB-Konto`, kreacja `linia3-Konto` i 8 powiązań z istniejącymi adami.
 `duplicate_lp_urls` jest czystą funkcją — dało się to sprawdzić bez sieci. **Bramki testuj na
-funkcji, nie na koncie.**
+funkcji, nie na koncie.** User zdecydował, że te obiekty mogą zostać (konto testowe) —
+nie są śmieciem do sprzątnięcia, tylko znanym tłem przy kolejnych testach na tej kampanii.
 
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
