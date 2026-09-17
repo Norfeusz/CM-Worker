@@ -6,6 +6,7 @@ Usage (demo, offline):
   py scripts/build_proposal.py <zip> <source> <lineNumber> [--json]
 """
 import datetime
+import difflib
 import json
 import os
 import re
@@ -365,6 +366,32 @@ def loose_units(parsed, consumed=(), conf=None):
     return out
 
 
+def pkg_label(zip_name):
+    """Nazwa paczki bez rozszerzenia — tak, jak pokazujemy ją użytkownikowi i jak
+    kluczujemy przypisanie paczki do strony docelowej (`BC- Meta Ads.zip` -> `BC- Meta Ads`)."""
+    return re.sub(r"\.(zip|7z)$", "", (zip_name or "").strip(), flags=re.I) or None
+
+
+def _unit_lp_key(u, folder_map):
+    """Po czym ta jednostka jest przypisana do strony docelowej: folder, a gdy folder
+    niczego nie rozstrzyga — PACZKA, z której przyszła.
+
+    Dostawa bywa rozdzielona nie folderem w środku zipa, tylko osobnym plikiem na linię
+    (`BC- Meta Ads.zip` = Konto, `FRC.zip` = Firmootwieracz). Taka paczka ma zwykle jeden
+    folder opakowujący, który parser słusznie obcina — zostają same pliki i do niedawna
+    nie było CZEGO przypisać, więc materiał obu paczek lądował pod obiema liniami
+    i każdy ad dostawał obie kreacje. Zgłoszone na realnym zleceniu 17.09.2026.
+
+    Folder ma pierwszeństwo, ale liczy się tylko wtedy, gdy NAPRAWDĘ jest przypisany do
+    strony: przy kilku paczkach każda jednostka dostaje przy scalaniu grupę o nazwie
+    źródła (`Facebook`), więc samo „folder istnieje" nigdy nie przepuściłoby paczki dalej.
+    """
+    f = _unit_folder(u)
+    if f in (folder_map or {}):
+        return f
+    return pkg_label(u.get("_zipName"))
+
+
 def _unit_folder(u):
     """The top-level zip folder a unit came from, whichever way parse_zip classified
     it. `remarketing/` lands in `group` (it is a GROUP_KEYWORD) while `prospecting/`
@@ -421,6 +448,77 @@ def set_from_message(message):
     """
     found = {re.sub(r"\s+", "", m).lower() for m in SET_IN_TEXT.findall(message or "")}
     return found.pop() if len(found) == 1 else None
+
+
+# Podobieństwo członu wystarczające, by uznać słowo z wiadomości za to samo co słowo
+# klucza. Polski odmienia: „paczka BC dotyczy Konta" wobec słowa klucza `Konto`
+# (0.80), „firmootwieracza" wobec `Firmootwieracz` (0.97). Ten sam próg co przy
+# porównywaniu członów ścieżki — patrz matcher.SEGMENT_MATCH_RATIO.
+MSG_TOKEN_RATIO = 0.75
+
+
+def _msg_clauses(message):
+    """Wiadomość pocięta na zdania składowe. Przypisanie paczki do linii pada w JEDNYM
+    kawałku („paczka BC dotyczy Konta, FRC - firmootwieracza"), więc para paczka+linia
+    musi stać obok siebie, a nie gdziekolwiek w całym tekście."""
+    return [c for c in re.split(r"[\n;,.]| oraz | i (?=[A-ZŁŚŻ])", message or "") if c.strip()]
+
+
+def _mentions(clause, token):
+    """Czy ten kawałek tekstu wymienia to słowo (z tolerancją na odmianę)."""
+    tok = matcher.normalize(token)
+    if not tok or len(tok) < 2:
+        return False
+    for w in re.findall(r"[0-9a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", clause or ""):
+        n = matcher.normalize(w)
+        if n == tok or (len(tok) >= 4
+                        and difflib.SequenceMatcher(None, n, tok).ratio() >= MSG_TOKEN_RATIO):
+            return True
+    return False
+
+
+def packages_from_message(message, packages, keywords):
+    """`{nazwa paczki: indeks adresu}` — przypisanie paczek do linii podane W TREŚCI zlecenia.
+
+    Realny przypadek (17.09.2026): dwie paczki, dwie linie, a w wiadomości „paczka BC
+    dotyczy Konta, FRC - firmootwieracza". Nazwa pliku nie przypomina słowa klucza, więc
+    automat po nazwie nie ma szans — ale człowiek napisał to wprost i narzędzie ma to
+    przeczytać, zamiast pytać o coś, co już dostało.
+
+    Bierzemy pod uwagę WYŁĄCZNIE kawałek tekstu, w którym paczka i słowo klucza stoją
+    razem, i tylko gdy w tym kawałku jest DOKŁADNIE JEDNA paczka i DOKŁADNIE JEDNO słowo
+    klucza. Paczka wymieniona przy dwóch różnych liniach jest odrzucana w całości —
+    przy takim zdaniu nie ma czego rozstrzygać, a zła odpowiedź oznacza kreacje pod
+    cudzym adem. Czego nie odczytamy, o to narzędzie zapyta.
+
+    Dopasowanie paczki idzie po członach jej nazwy (`BC- Meta Ads` -> `bc`, `meta`, `ads`),
+    ale tylko po tych, które NIE występują w nazwie innej paczki — inaczej wspólny człon
+    (`nnw_gdn.zip`, `nnw_meta.zip`) pasowałby do obu naraz.
+    """
+    labels = [p for p in (packages or []) if p]
+    if len(labels) < 2 or not (keywords or []):
+        return {}
+    raw = {lab: {matcher.normalize(t) for t in re.split(r"[^0-9a-zA-Z]+", lab) if t}
+           for lab in labels}
+    # Człon wspólny nie rozróżnia paczek — odejmujemy od PIERWOTNYCH zbiorów, nie od
+    # tych już okrojonych: przy `nnw_gdn` + `nnw_meta` skrócenie w miejscu zostawiało
+    # drugiej paczce wspólne `nnw`, przez co pasowała do obu zdań i całe przypisanie
+    # przepadało jako niejednoznaczne.
+    toks = {lab: {t for t in raw[lab] - set().union(*(v for k, v in raw.items() if k != lab))
+                  if len(t) >= 2}
+            for lab in labels}
+
+    out, seen = {}, {}
+    for clause in _msg_clauses(message):
+        hit_pkg = [l for l in labels if any(_mentions(clause, t) for t in toks[l])]
+        hit_kw = [i for i, kw in enumerate(keywords or [])
+                  if kw and _mentions(clause, matcher.keyword_label(kw) or kw)]
+        if len(hit_pkg) == 1 and len(hit_kw) == 1:
+            seen.setdefault(hit_pkg[0], set()).add(hit_kw[0])
+    for lab, idxs in seen.items():
+        if len(idxs) == 1:
+            out[lab] = idxs.pop()
+    return out
 
 
 def _source_tokens(source, conf):
@@ -846,7 +944,7 @@ def build_proposal(source, parsed, campaign, line=None, existing=None, source_ma
         v = dict(u)
         if msg_set and not v.get("set_index"):
             v["set_index"] = msg_set
-        idx = folder_map.get(_unit_folder(u))
+        idx = folder_map.get(_unit_lp_key(u, folder_map))
         v["_lines"] = lines_of_addr.get(idx, all_idx) if idx is not None else all_idx
         # remember the folder BEFORE it is cleared below: one folder name carries both
         # signals (`SPÓŁKA JPG` = which page, and which file format), and the format is

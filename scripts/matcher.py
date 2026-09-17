@@ -486,14 +486,25 @@ def unresolved_lp_folders(folder_match, n_lines):
       suspicious. If nothing matched at all the zip simply isn't organised that way
       (`GIF/`, `HTML/`, `300x250/`…) and every folder feeds every line — the ordinary
       "same graphics under both pages" order, which needs no question.
+
+    PACZKA jest wyjątkiem od tej drugiej reguły: o nieprzypisaną pytamy ZAWSZE, nawet gdy
+    żadna inna się nie dopasowała. Powód jest w powodzie dzielenia dostawy — osobny plik
+    na linię robi się PO TO, żeby materiał rozdzielić, a nazwy plików nieomal nigdy nie
+    przypominają nazw stron (`BC- Meta Ads.zip` wobec słowa klucza `Konto`), więc
+    „nic nie pasuje" jest tu normą, a nie sygnałem, że podziału nie ma. Przy starej regule
+    zlecenie z 17.09.2026 przeszło bez jednego pytania i podpięło kreacje obu linii pod
+    każdy ad.
     """
     fm = folder_match or {}
     if n_lines < 2:
         return []
     out = [{"folder": a["folder"], "candidates": a.get("candidates")}
            for a in fm.get("ambiguous") or []]
-    if fm.get("map"):
-        out += [{"folder": f, "candidates": None} for f in fm.get("unmatched") or []]
+    asked = {a["folder"] for a in fm.get("ambiguous") or []}
+    packs = set(fm.get("packages") or ())
+    for f in fm.get("unmatched") or []:
+        if f not in asked and (fm.get("map") or f in packs):
+            out.append({"folder": f, "candidates": None, "isPackage": f in packs})
     return out
 
 

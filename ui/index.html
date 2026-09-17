@@ -538,7 +538,42 @@
       );
     }
 
-    function LinesPanel({ lines, source, existing, folders, onUpdateLine, busy,
+    // Linia REUSE'owana: zamiast doklejać materiał do istniejącej linii, można świadomie
+    // zrobić z niej NOWĄ. Potrzebne, gdy ten sam adres obsługuje kolejną odsłonę kampanii —
+    // słowo klucza jest wtedy odrzucane (utworzyłoby drugie LP na ten sam adres), więc bez
+    // tego user nie miał jak powiedzieć „wiem, i właśnie o to mi chodzi".
+    function AddAsNewLine({ line, nextNo, source, onConvert, busy }) {
+      const [open, setOpen] = useState(false);
+      const suggested = 'linia' + nextNo + (line.keyword ? '-' + line.keyword : '');
+      const [name, setName] = useState(suggested);
+      useEffect(() => { setName(suggested); }, [suggested]);
+      if (!open) {
+        return <div style={{ marginTop: 4 }}>
+          <button className="btn mini" disabled={busy} onClick={() => setOpen(true)}>
+            ➕ dodaj jako nową linię
+          </button>
+        </div>;
+      }
+      return (
+        <div className="line-edit">
+          <label>Nazwa nowej linii (creative)
+            <input type="text" value={name} autoFocus
+              onChange={e => setName(e.target.value)} /></label>
+          <div className="hint">
+            Powstanie NOWA strona docelowa na ten sam adres — w CM360 stron docelowych
+            nie da się usunąć, więc rób to tylko wtedy, gdy faktycznie ma być osobna linia.
+            Nazwę LP dobierzemy z konwencji ({'linia{N}'}-{source}-…); poprawisz ją niżej.
+          </div>
+          <div className="line-edit-bar">
+            <button className="btn mini" disabled={busy || !name.trim()}
+              onClick={() => { onConvert(name.trim()); setOpen(false); }}>✔ Zrób nową linię</button>
+            <button className="btn mini" onClick={() => setOpen(false)}>Anuluj</button>
+          </div>
+        </div>
+      );
+    }
+
+    function LinesPanel({ lines, source, existing, folders, onUpdateLine, onConvertLine, busy,
                           struct, site, sites, campaign, plan, structBusy, onReloadStruct }) {
       const [tab, setTab] = useState('lines');
       // an order can carry SEVERAL landing pages; they may share a line number (same
@@ -547,6 +582,10 @@
       const usedNos = [...new Set(lines.filter(l => l.reusedLine).map(l => l.number))];
       const folderOf = idx => Object.keys((folders && folders.map) || {})
         .filter(f => folders.map[f] === idx);
+      // pierwszy wolny numer linii — podpowiedź przy „dodaj jako nową linię"; liczymy
+      // i z linii kampanii, i z tego zlecenia, żeby nie zderzyć się z linią dopiero tworzoną
+      const nextNo = Math.max(0, ...(existing || []).map(e => e.number || 0),
+                              ...lines.map(l => l.number || 0)) + 1;
       if (tab === 'struct') {
         return (
           <div className="card">
@@ -592,8 +631,13 @@
                     {fs.length ? `materiały z folderu: ${fs.join(', ')}` : 'materiały: wszystkie z paczki'}
                   </div>}
                   {onUpdateLine && (line.reusedLine
-                    ? <div className="hint">Linia istnieje w kampanii — nazwy i adresu nie
-                        zmieniamy tutaj (zmiana odpięłaby zlecenie od tej linii).</div>
+                    ? <div>
+                        <div className="hint">Linia istnieje w kampanii — nazwy i adresu nie
+                          zmieniamy tutaj (zmiana odpięłaby zlecenie od tej linii).</div>
+                        {onConvertLine && <AddAsNewLine line={line} nextNo={nextNo}
+                          source={line.source || source} busy={busy}
+                          onConvert={name => onConvertLine(i, name)} />}
+                      </div>
                     : <NewLineEditor line={line} busy={busy}
                         onSave={next => onUpdateLine(i, next)} />)}
                 </div>
@@ -1487,6 +1531,43 @@
         commit(np);
       }
 
+      // Z linii REUSE'owanej robimy NOWĄ: user wpisuje nazwę kreacji, nazwa LP idzie
+      // z konwencji linia{N}-{ŹRÓDŁO}[-{słowo}] (matcher.lp_name). Świadomie powstanie
+      // druga strona docelowa na ten sam adres — to jest dokładnie to, przed czym
+      // ostrzega „słowo klucza pominięte", tylko teraz wybrane przez człowieka.
+      function convertLineToNew(idx, creativeName) {
+        const np = clone();
+        const cur = (np.lines && np.lines[idx]) || (idx === 0 ? np.line : null);
+        if (!cur) return;
+        const src = cur.source || np.source || '';
+        const m = /^\s*linia\s*(\d+)(?:[-_](.*))?\s*$/i.exec(creativeName);
+        const lpName = m
+          ? 'linia' + m[1] + (src ? '-' + src : '') + (m[2] ? '-' + m[2].trim() : '')
+          : creativeName + (src ? '-' + src : '');
+        const oldCre = cur.creativeName, oldLp = cur.lpName;
+        cur.creativeName = creativeName;
+        cur.lpName = lpName;
+        cur.reusedLine = false;
+        cur.keywordIgnored = false;
+        if (m) cur.number = parseInt(m[1], 10);
+        if (idx === 0 && np.line && np.line !== cur) {
+          np.line = { ...np.line, creativeName, lpName, reusedLine: false };
+        }
+        // Adresujemy po KREACJI, której nazwę zmieniamy, a nie po starej nazwie LP:
+        // te dwie nie muszą być zgodne (creative może mieć własne LP), a rozjazd
+        // zostawiał kreację wskazującą starą stronę — wyłapane na żywo w przeglądarce.
+        np.placements.forEach(pl => pl.ads.forEach(a => a.creatives.forEach(cr => {
+          if (cr.name === oldCre) {
+            cr.name = creativeName;
+            cr.status = 'new';          // nowa kreacja, choćby ad był istniejący
+            if (cr.lpName) cr.lpName = lpName;
+          } else if (cr.lpName === oldLp) {
+            cr.lpName = lpName;
+          }
+        })));
+        commit(np);
+      }
+
       function renameAd(pl, idx, name) { const np = clone(); np.placements[pl].ads[idx].name = name; commit(np); }
       function renamePl(pl, name) { const np = clone(); np.placements[pl].name = name; commit(np); }
       function delAd(pl, idx) { const np = clone(); np.placements[pl].ads.splice(idx, 1); commit(np); }
@@ -1829,7 +1910,7 @@
               onApply={rows => rebuildOn({ ...campaignExtra(), mailLinks: rows })} />}
             <LinesPanel lines={p.lines || [p.line]} source={p.source}
               existing={p.existingLines || []} folders={p.lpFolders}
-              onUpdateLine={updateLine} busy={!!pending}
+              onUpdateLine={updateLine} onConvertLine={convertLineToNew} busy={!!pending}
               struct={siteStruct} site={structSite || (p.site && p.site.name)}
               sites={siteGroups} campaign={p.campaign}
               plan={p.placements} structBusy={structBusy}

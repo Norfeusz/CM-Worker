@@ -73,8 +73,8 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`, `test_promote.py`
-(**637/637 zielone na 16.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 108, proposal 194, orchestrate 59, create_site 15,
+(**652/652 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 113, proposal 204, orchestrate 59, create_site 15,
 ai_agents 111, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
@@ -964,6 +964,58 @@ z samego arkusza nie dało się wyczytać.
 Test regresyjny odtwarza wszystkie 14 nazw adów z arkusza (`test_proposal.py`), plus pisownia
 LP w `test_orchestrate.py`. Materiały leżą w `data/samples/bc/` (gitignored).
 
+## PACZKA JAKO ROZRÓŻNIENIE LINII (17.09.2026) — zgłoszony błąd
+
+Zlecenie: dwie paczki, dwie linie, w wiadomości „paczka BC dotyczy Konta, FRC -
+firmootwieracza". Ady powstały poprawnie, ale **kreacje OBU linii wylądowały pod każdym
+adem** — 14 adów × 2 kreacje zamiast 8 + 6.
+
+Przyczyna była trzywarstwowa i każdą warstwę widać było dopiero po odsłonięciu poprzedniej:
+1. **Nie było czego przypisywać.** Kandydatami do przypisania LP są FOLDERY w zipie, a obie
+   paczki miały po jednym folderze opakowującym, który parser słusznie obcina (inaczej
+   dostawa jednorozmiarowa traci wymiar). Zostały same pliki → `lpFolders.map` pusty →
+   „materiał nieprzypisany" znaczy „do wszystkich linii".
+2. **Wykluczenie po źródle wycinało wszystko.** Przy kilku paczkach scalanie nadaje KAŻDEJ
+   źródło zlecenia, więc reguła „paczka mająca źródło nie jest kandydatem" (słuszna dla
+   `..._gdn.zip` + `..._programmatic.zip`) odrzucała obie. Teraz grupujemy paczki PO ŹRÓDLE
+   i kandydatem jest ta, która ma rodzeństwo w tym samym źródle.
+3. **Grupa równa nazwie źródła przesłaniała paczkę.** `_unit_lp_key` brał folder, a folderem
+   był doklejony przy scalaniu znacznik `Facebook`. Folder liczy się więc tylko wtedy, gdy
+   NAPRAWDĘ jest w mapie przypisań.
+
+Co działa po poprawce (`serve._lp_package_candidates`, `build_proposal._unit_lp_key`):
+* **przypisanie z TREŚCI zlecenia** — `build_proposal.packages_from_message()`. Bierze pod
+  uwagę tylko kawałek zdania, w którym paczka i słowo klucza stoją RAZEM, i tylko gdy jest
+  tam dokładnie jedna paczka i dokładnie jedno słowo klucza. Polską odmianę łyka próg
+  podobieństwa (`Konta`→`Konto` 0.80). Paczka wymieniona przy dwóch liniach jest odrzucana
+  w całości — przy takim zdaniu nie ma czego rozstrzygać;
+* **o nieprzypisaną paczkę PYTAMY ZAWSZE** (`unresolved_lp_folders`), inaczej niż o folder.
+  Dla folderów obowiązuje „pytaj dopiero, gdy inny się dopasował", bo zip bywa ułożony po
+  formatach. Dla paczek ta reguła nie ma sensu: osobny plik na linię robi się PO TO, żeby
+  rozdzielić materiał, a nazwa pliku prawie nigdy nie przypomina nazwy strony;
+* **nazwa paczki nie zostaje etykietą LP** — mówi, KTÓRA strona dostaje materiał, a nie jak
+  się nazywa (`linia4-FB-BC-Meta-Ads` byłoby bez sensu).
+
+Zweryfikowane end-to-end na realnych paczkach: z adnotacją 8 adów → `linia3-Konto`, 6 →
+`linia4-Firmootwieracz`; bez adnotacji eskalacja `lp_material_mapping`; po odpowiedzi w UI
+ten sam podział; odpowiedź „wszystkie" nadal daje stare zachowanie, ale świadomie.
+
+**Uwaga na przyszłość**: człon wspólny nazw paczek (`nnw_gdn` + `nnw_meta`) nie rozróżnia
+ich, więc jest odejmowany — ale MUSI być odejmowany od zbiorów pierwotnych. Skrócenie
+„w miejscu" zostawiało drugiej paczce wspólne `nnw`, przez co pasowała do obu zdań i całe
+przypisanie przepadało jako niejednoznaczne. Jest na to test.
+
+### „Dodaj jako nową linię" dla linii REUSE'owanej
+Gdy adres JUŻ jest LP w kampanii, słowo klucza jest odrzucane (przemianowanie utworzyłoby
+drugie LP na ten sam adres) i dotąd nie było jak powiedzieć „wiem, i właśnie o to mi chodzi".
+Przycisk w karcie linii pyta o nazwę kreacji, podpowiada pierwszy wolny numer + słowo klucza
+(`linia5-Konto`), a nazwę LP składa z konwencji (`linia5-FB-Konto`). Po konwersji linia jest
+NOWA, więc wraca zwykły edytor („✏️ zmień adres / nazwę") i można wszystko dostroić.
+
+**Adresujemy po KREACJI, której nazwę zmieniamy, nie po starej nazwie LP** — te dwie nie
+muszą być zgodne (creative bywa z własnym LP) i rozjazd zostawiał kreację wskazującą starą
+stronę. Wyłapane dopiero na żywo w przeglądarce, nie przy czytaniu kodu.
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
@@ -1052,7 +1104,7 @@ LP w `test_orchestrate.py`. Materiały leżą w `data/samples/bc/` (gitignored).
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
-   **Musi być 637/637.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 652/652.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest

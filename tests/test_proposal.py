@@ -908,6 +908,47 @@ check("z rodziną ze spacją podkreślnik dołącza do niej",
 check("pusta lista adów nic nie zmienia (nowy placement)",
       B.adopt_ad_separator("1200x628_1", []), "1200x628_1")
 
+print("\nPACZKA jako rozróżnienie linii (zgłoszenie 17.09.2026):")
+# Dostawa rozdzielona nie folderem, tylko osobnym plikiem na linię. Taka paczka ma jeden
+# folder opakowujący, który parser obcina — nie było CZEGO przypisać, więc materiał obu
+# paczek szedł pod obie linie i każdy ad dostawał obie kreacje.
+PKG_MSG = "paczka BC dotyczy Konta, FRC - firmootwieracza"
+check("przypisanie odczytane z treści zlecenia",
+      B.packages_from_message(PKG_MSG, ["BC- Meta Ads", "FRC"], ["Konto", "Firmootwieracz"]),
+      {"BC- Meta Ads": 0, "FRC": 1})
+check("polska odmiana nie przeszkadza (Konta -> Konto, firmootwieracza -> Firmootwieracz)",
+      B.packages_from_message("BC to Konta; FRC to firmootwieracza",
+                              ["BC", "FRC"], ["Konto", "Firmootwieracz"]),
+      {"BC": 0, "FRC": 1})
+# Człony wspólne nie rozróżniają paczek, a odejmowanie ich „w miejscu" zostawiało
+# drugiej paczce wspólne `nnw`, przez co pasowała do obu zdań i całość przepadała.
+check("wspólny człon nazw nie psuje przypisania (nnw_gdn / nnw_meta)",
+      B.packages_from_message("nnw gdn dotyczy Konta, nnw meta - firmootwieracza",
+                              ["nnw_gdn", "nnw_meta"], ["Konto", "Firmootwieracz"]),
+      {"nnw_gdn": 0, "nnw_meta": 1})
+check("kolejność zdań bez znaczenia",
+      B.packages_from_message("nnw meta - firmootwieracza, nnw gdn dotyczy Konta",
+                              ["nnw_gdn", "nnw_meta"], ["Konto", "Firmootwieracz"]),
+      {"nnw_gdn": 0, "nnw_meta": 1})
+check("bez wzmianki nie zgadujemy",
+      B.packages_from_message("Kodujemy Metę z paczek.", ["BC", "FRC"],
+                              ["Konto", "Firmootwieracz"]), {})
+check("paczka wymieniona przy DWÓCH liniach jest odrzucana w całości",
+      B.packages_from_message("BC dotyczy Konta, BC też firmootwieracza",
+                              ["BC", "FRC"], ["Konto", "Firmootwieracz"]), {})
+check("jedna paczka to całe zlecenie — nie ma czego rozróżniać",
+      B.packages_from_message(PKG_MSG, ["BC- Meta Ads"], ["Konto", "Firmootwieracz"]), {})
+check("nazwa paczki bez rozszerzenia",
+      [B.pkg_label("BC- Meta Ads.zip"), B.pkg_label("x.7z"), B.pkg_label("")],
+      ["BC- Meta Ads", "x", None])
+# Przy kilku paczkach scalanie dokłada każdej jednostce grupę o nazwie ŹRÓDŁA. Gdyby
+# „folder istnieje" wystarczało, paczka nigdy nie doszłaby do głosu.
+check("grupa równa źródłu nie przesłania paczki",
+      B._unit_lp_key({"group": "Facebook", "_zipName": "FRC.zip"}, {"FRC": 1}), "FRC")
+check("prawdziwy folder ma pierwszeństwo nad paczką",
+      B._unit_lp_key({"group": "Lookalike", "_zipName": "FRC.zip"},
+                     {"Lookalike": 0, "FRC": 1}), "Lookalike")
+
 print("\nkreacja z datą, gdy ad już niesie tę linię:")
 check("format z konta: spacja + DD.MM.RR",
       B.dated_creative_name("linia4-Konto", {"linia4-Konto"}, datetime.date(2026, 9, 16)),

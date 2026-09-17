@@ -429,6 +429,34 @@ check("unreadable URL tokens + folder labels -> usable LP names",
       [l["lpName"] for l in ids],
       ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
 
+print("\nnieprzypisana PACZKA — pytamy zawsze, folder tylko gdy inny się dopasował:")
+# Reguła dla folderów („pytaj dopiero, gdy zip jest ewidentnie ułożony per strona")
+# dla paczek nie działa: osobny plik na linię robi się PO TO, żeby rozdzielić materiał,
+# a nazwa pliku prawie nigdy nie przypomina nazwy strony. Przy starej regule zlecenie
+# z 17.09.2026 przeszło bez jednego pytania i podpięło obie kreacje pod każdy ad.
+check("dwie nieprzypisane paczki -> dwa pytania, mimo że nic się nie dopasowało",
+      [q["folder"] for q in M.unresolved_lp_folders(
+          {"map": {}, "unmatched": ["BC- Meta Ads", "FRC"], "ambiguous": [],
+           "packages": ["BC- Meta Ads", "FRC"]}, 2)],
+      ["BC- Meta Ads", "FRC"])
+check("nieprzypisany FOLDER bez żadnego dopasowania nadal NIE pyta (zwykła paczka)",
+      M.unresolved_lp_folders({"map": {}, "unmatched": ["GIF", "HTML"], "ambiguous": [],
+                               "packages": []}, 2), [])
+check("jedna linia -> nie ma o co pytać",
+      M.unresolved_lp_folders({"map": {}, "unmatched": ["BC"], "ambiguous": [],
+                               "packages": ["BC"]}, 1), [])
+check("paczka oznaczona w pytaniu, żeby UI mógł ją nazwać po imieniu",
+      [q.get("isPackage") for q in M.unresolved_lp_folders(
+          {"map": {"X": 0}, "unmatched": ["BC", "Screening"], "ambiguous": [],
+           "packages": ["BC"]}, 2)],
+      [True, False])
+check("niejednoznaczna nie dubluje się z nieprzypisaną",
+      [q["folder"] for q in M.unresolved_lp_folders(
+          {"map": {}, "unmatched": ["BC"], "ambiguous": [{"folder": "BC",
+                                                          "candidates": [0, 1]}],
+           "packages": ["BC"]}, 2)],
+      ["BC"])
+
 print("\nREALNA mapa advertiserów vs adresy odczytane z produkcji 15.09.2026:")
 # Te adresy nie są wymyślone — każdy pochodzi ze strony docelowej stojącej na koncie
 # klienta pod advertiserem, który jest tu oczekiwany. Test pilnuje PLIKU CONFIGU, nie

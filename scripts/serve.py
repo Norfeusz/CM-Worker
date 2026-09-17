@@ -92,7 +92,50 @@ def _lp_folder_candidates(parsed, selected=None):
                     if v and v not in names and v not in src_folders]
 
 
-def _match_lp_folders(links, anchor, parsed, override=None, keywords=None, selected=None):
+def _lp_package_candidates(parsed):
+    """Nazwy PACZEK, które mogą wskazywać stronę docelową (obok folderów w środku zipa).
+
+    Dostawca coraz częściej dzieli materiał nie folderem, tylko osobnym plikiem na linię.
+    Taka paczka ma jeden folder opakowujący, który parser obcina, więc kandydatów nie było
+    wcale — a przy dwóch liniach brak przypisania znaczy „wszystko do obu", czyli każdy ad
+    dostawał obie kreacje. Zgłoszone na realnym zleceniu 17.09.2026.
+
+    Kandydatem jest paczka, która ma RODZEŃSTWO W TYM SAMYM ŹRÓDLE i nie dzieli materiału
+    folderami w środku:
+    * paczki rozdzielone ŹRÓDŁAMI (`..._gdn.zip` + `..._programmatic.zip`) mówią o źródle,
+      nie o stronie — ta sama zasada, przez którą folder wybranego źródła nie jest
+      kandydatem (inaczej `GDN/` + `Programmatic/` zostały zjedzone jako rozróżnienie LP
+      i drugie źródło znikało z drzewa bez słowa). Grupujemy więc po źródle, zamiast
+      odrzucać każdą paczkę, która jakieś ma: przy kilku paczkach KAŻDA dostaje źródło
+      zlecenia, więc odrzucanie „po posiadaniu źródła" wykluczało wszystkie;
+    * jedna paczka w źródle to całe jego zlecenie, nie jego część — nie ma czego rozróżniać;
+    * paczka dzieląca materiał FOLDERAMI ma już dokładniejsze rozróżnienie niż nazwa pliku.
+      Grupa równa nazwie źródła się nie liczy — to znacznik doklejony przy scalaniu paczek,
+      a nie folder od dostawcy.
+    """
+    packs = parsed.get("packages") or []
+    if len(packs) < 2:
+        return []
+    units = parsed.get("units") or []
+    by_source = {}
+    for p in packs:
+        by_source.setdefault(str(p.get("source") or ""), []).append(p)
+    out = []
+    for src, group in by_source.items():
+        if len(group) < 2:
+            continue
+        for p in group:
+            mine = [u for u in units if u.get("_zipName") == (p.get("name") or "")]
+            inner = [f for f in (B._unit_folder(u) for u in mine)
+                     if f and str(f).lower() != src.lower()]
+            label = B.pkg_label(p.get("name"))
+            if mine and not inner and label:
+                out.append(label)
+    return out
+
+
+def _match_lp_folders(links, anchor, parsed, override=None, keywords=None, selected=None,
+                      message=""):
     """Deterministic folder -> landing page matching, with the user's answers on top.
 
     Returns (folder_match, labels) where labels feeds resolve_lines: a folder name is
@@ -107,7 +150,26 @@ def _match_lp_folders(links, anchor, parsed, override=None, keywords=None, selec
         tok = M.normalize(M.keyword_label(kw) or "")
         if tok and int(i) < len(discs) and tok not in discs[int(i)]:
             discs[int(i)] = [tok] + discs[int(i)]
-    fm = M.match_folders_to_lps(_lp_folder_candidates(parsed, selected), discs)
+    packs = _lp_package_candidates(parsed)
+    fm = M.match_folders_to_lps(_lp_folder_candidates(parsed, selected) + packs, discs)
+    # Paczki są kandydatami innego rodzaju niż foldery i muszą być rozpoznawalne dalej:
+    # o nieprzypisaną paczkę PYTAMY zawsze (patrz `unresolved_lp_folders`), a jej nazwa
+    # nie może zostać etykietą strony docelowej — mówi, KTÓRA strona dostaje materiał,
+    # a nie jak się nazywa (`linia4-FB-BC-Meta-Ads` byłoby bez sensu).
+    fm["packages"] = packs
+    # Przypisanie paczki do linii podane WPROST w zleceniu bije dopasowanie po nazwie:
+    # to zdanie napisał człowiek o tej konkretnej dostawie, a nazwa pliku rzadko
+    # przypomina nazwę strony. Nadal ustępuje odpowiedzi z UI (niżej).
+    from_msg = B.packages_from_message(message, packs,
+                                       [(keywords or {}).get(i) or (keywords or {}).get(str(i))
+                                        for i in range(len(links))]
+                                       if isinstance(keywords, dict) else list(keywords or []))
+    if from_msg:
+        fm = dict(fm, map=dict(fm.get("map") or {}, **from_msg),
+                  unmatched=[f for f in fm.get("unmatched") or [] if f not in from_msg],
+                  ambiguous=[a for a in fm.get("ambiguous") or []
+                             if a["folder"] not in from_msg],
+                  fromMessage=dict(from_msg))
     # Only folders the AUTOMATIC pass recognised by name stop being placement
     # discriminators — those are landing-page folders and nothing else. A user answer
     # says which page a folder feeds; it does NOT stop `screening/` from being a format
@@ -129,7 +191,8 @@ def _match_lp_folders(links, anchor, parsed, override=None, keywords=None, selec
                 fm["map"].pop(folder, None)          # "all" -> feeds every line
     labels = {}
     for folder, idx in (fm.get("map") or {}).items():
-        labels.setdefault(idx, folder)
+        if folder not in packs:
+            labels.setdefault(idx, folder)
     return fm, labels
 
 
@@ -262,7 +325,7 @@ def build_proposal(link, zip_path, source, message="", campaign_id=None, new_cam
     lp_src = B.lp_source(source)
     selected = B.selected_sources(source, sources)
     folder_match, labels = _match_lp_folders(links, anchor, parsed, folder_map, keywords,
-                                            selected)
+                                            selected, message)
     # źródło przypisane do adresu ma sens tylko jeśli jest wśród wybranych
     row_src = {int(i): s for i, s in (row_sources or {}).items() if s in selected}
     # programmatic: etykietą LP jest AUDIENCJA, a słowo klucza staje się nazwą linii
