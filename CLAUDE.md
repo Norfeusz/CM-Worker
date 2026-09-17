@@ -73,8 +73,8 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`, `test_promote.py`
-(**663/663 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 121, proposal 204, orchestrate 59, create_site 15,
+(**671/671 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 121, proposal 204, orchestrate 67, create_site 15,
 ai_agents 114, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
@@ -1037,6 +1037,31 @@ jedną nazwą, a to byłby zdublowany tag. Orkiestrator i tak ma bezpiecznik
 harnessu dla JS. Testami przykryte są `matcher` i ścieżka agenta; wersję z UI sprawdzono na
 żywo w przeglądarce na odtworzonym stanie z arkusza.
 
+### DRUGIE LP na tym samym adresie — zapis PYTA (17.09.2026, życzenie usera)
+`Orchestrator.duplicate_lp_urls()` + odmowa w `/api/commit` (`needsConfirm`) + `window.confirm`
+w UI + ostrzeżenie w dry-runie. Powód: konwersja na nową linię JEST legalna i czasem
+zamierzona, ale **LP w CM360 się nie usuwa**, więc pomyłka zostaje na koncie klienta na
+zawsze. Odmowa następuje ZANIM orkiestrator wystartuje — potwierdzone na żywo (`log` pusty).
+
+**Dwie drogi wykrywania, bo żadna sama nie wystarcza:**
+1. **`replacesLp`** — ślad odkładany przez „dodaj jako nową linię": nazwa strony, którą ta
+   linia dotąd współdzieliła. Sygnał pewny, bo pochodzi z dopasowania zrobionego przez samo
+   narzędzie przy budowaniu propozycji.
+2. **identyczny adres** — gdy ktoś wpisał nazwę ręcznie, bez konwersji.
+
+**Dlaczego punkt 1 jest konieczny** (kosztowało realny zapis): pierwsza wersja porównywała
+same adresy i milczała, bo LP na koncie miało `utm_medium=cpc`, którego nie było w linku ze
+zlecenia — dla porównania dokładnego to DWA różne adresy, i słusznie. Porównanie zostaje
+dokładne świadomie: zwinięcie parametrów robiłoby fałszywy alarm na każdym zleceniu
+wieloźródłowym (`utm_source=facebook` vs `=gdn` to naprawdę dwie strony).
+
+**Uwaga metodyczna, opłacona śmieciem na koncie**: bramkę „czy blokuje zapis" sprawdzałem
+realnym zapisem z `dryRun:false`, zamiast najpierw na czystej funkcji. Bramka nie zadziałała,
+więc zapis przeszedł i na koncie testowym (kampania `karta_lodz_summer_festiwal_2026- testy`)
+powstały: LP `linia9-FB-Konto`, kreacja `linia3-Konto` i 8 powiązań z istniejącymi adami.
+`duplicate_lp_urls` jest czystą funkcją — dało się to sprawdzić bez sieci. **Bramki testuj na
+funkcji, nie na koncie.**
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
@@ -1125,7 +1150,7 @@ harnessu dla JS. Testami przykryte są `matcher` i ścieżka agenta; wersję z U
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
-   **Musi być 663/663.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 671/671.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest

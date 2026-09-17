@@ -108,6 +108,65 @@ class Orchestrator:
         return bad
 
     @staticmethod
+    def duplicate_lp_urls(proposal, state):
+        """Strony docelowe, które ZAŁOŻYMY na adresie już obsługiwanym przez inną stronę
+        tej kampanii. Zwraca `{nowaNazwa: [istniejące nazwy na tym adresie]}`.
+
+        Po co osobne sprawdzenie: to jest legalny ruch i czasem zamierzony — tak działa
+        „dodaj jako nową linię", gdy kolejna odsłona kampanii idzie na ten sam adres.
+        Ale **LP w CM360 się nie usuwa**, więc pomyłka zostaje na koncie klienta na zawsze,
+        a z samego drzewa nie widać, że coś takiego się stanie. Dlatego zapis pyta o zgodę
+        zamiast milczeć — i pyta o SYTUACJĘ, nie o to, skąd się wzięła: tak samo złapie
+        ręczną zmianę nazwy w edytorze linii i operację agenta.
+
+        Łapiemy to DWIEMA drogami, bo żadna sama nie wystarcza:
+
+        1. `replacesLp` na linii — ślad po „dodaj jako nową linię": nazwa strony, którą ta
+           linia dotąd współdzieliła. To jest sygnał PEWNY, bo pochodzi z dopasowania
+           zrobionego przez samo narzędzie przy budowaniu propozycji.
+        2. identyczny adres — gdy ktoś wpisał nazwę ręcznie, bez konwersji.
+
+        Porównanie adresów jest DOKŁADNE (po obcięciu spacji), świadomie z parametrami:
+        `?utm_source=facebook` i `?utm_source=gdn` to dwie różne strony i tak mają być
+        trafficowane — zwinięcie parametrów robiłoby fałszywe alarmy na każdym zleceniu
+        wieloźródłowym. Dlatego właśnie potrzebny jest punkt 1: realny przypadek z 17.09.2026
+        miał na koncie `utm_medium=cpc`, którego nie było w linku ze zlecenia, więc po samych
+        adresach wyszły DWIE różne strony i bramka milczała.
+        """
+        by_name = state.get("lps_by_name") or {}
+        by_url = {}
+        for n, u in (state.get("lp_urls_by_name") or {}).items():
+            key = (u or "").strip()
+            if key:
+                by_url.setdefault(key, []).append(n)
+
+        out = {}
+        for ln in ([proposal.get("line")] if proposal.get("line") else []) \
+                + (proposal.get("lines") or []):
+            was, now = ln.get("replacesLp"), ln.get("lpName")
+            if not was or not now or was == now:
+                continue
+            if Orchestrator._find_lp(by_name, was)[1] and not Orchestrator._find_lp(by_name, now)[1]:
+                out.setdefault(now, set()).add(was)
+
+        pairs = [(proposal.get("line", {}).get("lpName"),
+                  proposal.get("line", {}).get("url"))]
+        for pl in proposal.get("placements") or []:
+            for ad in pl.get("ads") or []:
+                for cr in ad.get("creatives") or []:
+                    pairs.append(Orchestrator._lp_key(proposal, cr))
+        for name, url in pairs:
+            if not name or not (url or "").strip():
+                continue
+            if Orchestrator._find_lp(by_name, name)[1]:
+                continue                      # LP już istnieje — niczego nie zakładamy
+            clash = [n for n in by_url.get((url or "").strip(), [])
+                     if n.lower() != name.lower()]
+            if clash:
+                out.setdefault(name, set()).update(clash)
+        return {k: sorted(v) for k, v in out.items()}
+
+    @staticmethod
     def _find_lp(by_name, name):
         """(istniejąca nazwa, id) szukane BEZ WZGLĘDU NA WIELKOŚĆ LITER, inaczej (None, None).
 

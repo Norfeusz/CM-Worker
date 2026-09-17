@@ -705,9 +705,24 @@ class Handler(BaseHTTPRequestHandler):
                              "istnieją jeszcze w kampanii — CM360 odrzuciłby je w połowie "
                              f"zapisu (błąd 18112). Uzupełnij adres albo wskaż istniejące "
                              f"LP. Brakuje: {szczegoly}"}
+        # DRUGA strona docelowa na adres, który w kampanii już swoją ma. Bywa zamierzona
+        # („dodaj jako nową linię"), ale LP w CM360 się NIE USUWA, więc pomyłka zostaje
+        # na koncie klienta na zawsze. Pytamy raz, wprost, przed realnym zapisem — dry-run
+        # pokazuje to samo jako ostrzeżenie, żeby nie było zaskoczeniem przy kliknięciu.
+        dup = Orchestrator.duplicate_lp_urls(proposal, state)
+        if dup and not dry and not req.get("confirmDuplicateLp"):
+            return {"needsConfirm": {
+                "kind": "duplicateLp",
+                "items": [{"lpName": n, "existing": e} for n, e in sorted(dup.items())],
+                "message": "Powstaną nowe strony docelowe na adresach, które w tej kampanii "
+                           "już mają swoją stronę. W CM360 strony docelowej NIE DA SIĘ "
+                           "usunąć, więc to jest nieodwracalne. Potwierdź, jeśli o to chodzi."}}
         orch = Orchestrator(svc, TEST_PROFILE, adv, campaign, dry_run=dry)
         log = orch.run(proposal, state)
         out = {"dryRun": dry, "log": log, "campaignId": orch.cid}
+        if dup:
+            out["duplicateLpWarning"] = [{"lpName": n, "existing": e}
+                                         for n, e in sorted(dup.items())]
         if no_url:
             # w dry-runie tylko ostrzegamy, żeby użytkownik zobaczył problem PRZED
             # kliknięciem zapisu, a nie dopiero jako odmowę

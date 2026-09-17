@@ -61,6 +61,9 @@ def fetch_state(svc, profile_id, advertiser_id, campaign_id=None):
         "ad_creatives": {},    # (siteName, placementName, adName) -> set(creativeName)
         "creatives_by_name": {},  # creativeName -> creativeId
         "lps_by_name": {},     # lpName -> landingPageId (within campaign)
+        "lp_urls_by_name": {}, # lpName -> url (w kampanii) — po to, żeby przed zapisem
+                               # wykryć ZAŁOŻENIE drugiej strony na adresie, który już
+                               # ma swoją; LP w CM360 się nie usuwa, więc to nieodwracalne
         "adv_lp_by_name_url": {(lp["name"], lp.get("url", "")): lp["id"] for lp in adv_lps},
     }
     if not campaign_id:
@@ -96,4 +99,5 @@ def fetch_state(svc, profile_id, advertiser_id, campaign_id=None):
     lps = _paginate(svc.advertiserLandingPages, "landingPages",
                     profileId=profile_id, campaignIds=[campaign_id])
     state["lps_by_name"] = {lp["name"]: lp["id"] for lp in lps}
+    state["lp_urls_by_name"] = {lp["name"]: lp.get("url", "") for lp in lps}
     return state

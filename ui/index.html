@@ -1573,9 +1573,15 @@
         cur.lpName = lpName;
         cur.reusedLine = false;
         cur.keywordIgnored = false;
+        // ŚLAD po konwersji: nazwa LP, którą ta linia dotąd współdzieliła. Bez tego
+        // serwer nie ma jak rozpoznać, że zakłada DRUGĄ stronę na ten sam adres —
+        // porównanie samych URL-i tego nie łapie, bo adres z formularza bywa zapisany
+        // inaczej niż na koncie (`utm_medium=cpc` jest na LP, a nie w linku ze zlecenia).
+        cur.replacesLp = oldLp;
         if (m) cur.number = parseInt(m[1], 10);
         if (idx === 0 && np.line && np.line !== cur) {
-          np.line = { ...np.line, creativeName, lpName, reusedLine: false };
+          np.line = { ...np.line, creativeName, lpName, reusedLine: false,
+                      replacesLp: oldLp };
         }
         // Adresujemy po KREACJI, której nazwę zmieniamy, a nie po starej nazwie LP:
         // te dwie nie muszą być zgodne (creative może mieć własne LP), a rozjazd
@@ -1784,7 +1790,7 @@
         });
       }
 
-      async function doCommit(dryRun) {
+      async function doCommit(dryRun, confirmed) {
         setCommitRes({ busy: true, dryRun });
         await runBusy(dryRun ? 'Sprawdzam plan zapisu' : 'Zapisuję w CM360',
                       dryRun ? 'dry-run — czytam stan konta, nic nie zapisuję'
@@ -1794,9 +1800,23 @@
             const eff = { ...p, placements: p.placements.filter(isVisible) };
             const r = await fetch('/api/commit', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ proposal: eff, answers, dryRun }),
+              body: JSON.stringify({ proposal: eff, answers, dryRun,
+                                     ...(confirmed ? { confirmDuplicateLp: true } : {}) }),
             });
             const d = await r.json();
+            // Serwer odmówił i pyta o zgodę: nowa strona docelowa na adresie, który
+            // w kampanii już swoją ma. Pytanie zadaje SERWER, bo tylko on zna stan konta —
+            // UI tylko je pokazuje i odsyła odpowiedź.
+            if (d.needsConfirm) {
+              const lista = (d.needsConfirm.items || [])
+                .map(i => `• ${i.lpName} — ten adres ma już: ${(i.existing || []).join(', ')}`)
+                .join('\n');
+              setCommitRes({ needsConfirm: d.needsConfirm });
+              if (window.confirm(`${d.needsConfirm.message}\n\n${lista}\n\nZapisać mimo to?`)) {
+                await doCommit(false, true);
+              }
+              return;
+            }
             setCommitRes(d);
             // Udany dry-run zatwierdza plan DLA TEJ struktury — dopiero to odblokowuje
             // realny zapis. Błąd nie zatwierdza niczego.
@@ -2181,6 +2201,19 @@
                   ⚠️ Te strony docelowe nie mają adresu URL: {commitRes.lpUrlWarning.join(', ')}.
                   Zapis zostanie odrzucony, dopóki nie uzupełnisz adresu (albo nie wskażesz
                   istniejącego LP) — CM360 nie przyjmuje LP bez adresu.
+                </div>
+              )}
+              {commitRes.duplicateLpWarning && commitRes.duplicateLpWarning.length > 0 && (
+                <div style={{ margin: '8px 0', padding: '8px 11px', borderRadius: 8,
+                              background: 'var(--warn-bg)', color: 'var(--warn)',
+                              border: '1px solid var(--warn-line)', fontWeight: 600 }}>
+                  ⚠️ Powstaną DRUGIE strony docelowe na adresach, które w tej kampanii już
+                  swoją mają:{' '}
+                  {commitRes.duplicateLpWarning.map(i =>
+                    `${i.lpName} (adres ma już: ${(i.existing || []).join(', ')})`).join('; ')}.
+                  Bywa to zamierzone (kolejna odsłona kampanii pod tym samym adresem), ale
+                  w CM360 strony docelowej NIE DA SIĘ usunąć — przed zapisem poprosimy
+                  o potwierdzenie.
                 </div>
               )}
               {commitRes.servingWarning && commitRes.servingWarning.length > 0 && (

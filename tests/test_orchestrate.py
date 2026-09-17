@@ -230,6 +230,52 @@ check("...i wskazuje wszystkie creative, które z niego korzystają (to skutek, 
 check("gdy wszystko ma adresy — brak zastrzeżeń",
       Orchestrator.lp_urls_missing(proposal, state), {})
 
+print("\nDRUGIE LP NA TYM SAMYM ADRESIE — zapis pyta o zgodę (LP w CM360 się nie usuwa):")
+DUP_URL = "https://x/nieruchomosci/promocja"
+prop_dup = B.build_proposal("GDN", parsed, camp, line, target_url=DUP_URL)
+state_ma_adres = dict(state, lps_by_name={"linia1-GDN-stara": "LP1"},
+                      lp_urls_by_name={"linia1-GDN-stara": DUP_URL})
+dup = Orchestrator.duplicate_lp_urls(prop_dup, state_ma_adres)
+check("wykrywa, że adres ma już swoją stronę w kampanii",
+      {k: v for k, v in dup.items()}, {"linia2-GDN": ["linia1-GDN-stara"]})
+check("gdy adres jest wolny — nic do potwierdzania",
+      Orchestrator.duplicate_lp_urls(
+          prop_dup, dict(state, lps_by_name={}, lp_urls_by_name={})), {})
+check("LP, które JUŻ istnieje pod tą nazwą, niczego nie zakłada",
+      Orchestrator.duplicate_lp_urls(
+          prop_dup, dict(state, lps_by_name={"linia2-GDN": "LP7"},
+                         lp_urls_by_name={"linia2-GDN": DUP_URL})), {})
+# Parametry ROZRÓŻNIAJĄ strony (utm_source per źródło) — zwijanie ich robiłoby fałszywy
+# alarm na każdym zleceniu wieloźródłowym, więc porównanie jest dokładne.
+check("ten sam adres z innym parametrem to inna strona, nie duplikat",
+      Orchestrator.duplicate_lp_urls(
+          prop_dup, dict(state, lps_by_name={"linia1-GDN-stara": "LP1"},
+                         lp_urls_by_name={"linia1-GDN-stara": DUP_URL + "?utm_source=gdn"})),
+      {})
+# DRUGA droga i ta WAŻNIEJSZA: ślad po konwersji. Realny przypadek z 17.09.2026 miał na
+# koncie `utm_medium=cpc`, którego nie było w linku ze zlecenia, więc po samych adresach
+# wychodziły dwie RÓŻNE strony i bramka milczała — a zapis i tak zakładał drugie LP.
+prop_conv = B.build_proposal("GDN", parsed, camp, line, target_url=DUP_URL)
+prop_conv["line"]["replacesLp"] = "linia1-GDN-stara"
+prop_conv["lines"][0]["replacesLp"] = "linia1-GDN-stara"
+check("konwersja jest wykryta MIMO innego zapisu adresu",
+      Orchestrator.duplicate_lp_urls(
+          prop_conv, dict(state, lps_by_name={"linia1-GDN-stara": "LP1"},
+                          lp_urls_by_name={"linia1-GDN-stara": DUP_URL + "&utm_medium=cpc"})),
+      {"linia2-GDN": ["linia1-GDN-stara"]})
+check("gdy stara strona NIE istnieje w kampanii — nie ma o co pytać",
+      Orchestrator.duplicate_lp_urls(
+          prop_conv, dict(state, lps_by_name={}, lp_urls_by_name={})), {})
+check("gdy nowa nazwa JUŻ istnieje — też nie zakładamy drugiej",
+      Orchestrator.duplicate_lp_urls(
+          prop_conv, dict(state, lps_by_name={"linia1-GDN-stara": "LP1", "linia2-GDN": "LP2"},
+                          lp_urls_by_name={})), {})
+
+check("pusty adres nie jest duplikatem niczego",
+      Orchestrator.duplicate_lp_urls(
+          B.build_proposal("GDN", parsed, camp, line),
+          dict(state, lps_by_name={"x": "LP1"}, lp_urls_by_name={"x": ""})), {})
+
 print("\nPISOWNIA LP: konto klienta miesza wielkość liter w jednej kampanii\n"
       "(35398313: 14x `Linia4-FB-Konto`, ale `linia7-FB-rozchodniak`) — porównanie\n"
       "dokładne tworzyło DRUGIE LP na ten sam adres, a LP w CM360 się nie usuwa:")
