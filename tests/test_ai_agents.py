@@ -27,8 +27,8 @@ def check(name, got, want):
 
 def op(kind, **kw):
     """An op with every schema key present, like the model is required to send."""
-    full = {"op": kind, "placement": None, "ad": None, "creative": None, "name": None,
-            "to": None, "lpName": None, "lpUrl": None, "reason": "test"}
+    full = {"op": kind, "site": None, "placement": None, "ad": None, "creative": None,
+            "name": None, "to": None, "lpName": None, "lpUrl": None, "reason": "test"}
     full.update(kw)
     return full
 
@@ -384,8 +384,13 @@ print("\nkontrakt żądania dla roli (b):")
 req = A.build_intent_request(base, "Screening to osobny placement")
 check("żądanie ma uwagi, strukturę, zip i słownik operacji",
       sorted(req), ["allowed_ops", "answers", "instructions", "remarks", "structure", "zip"])
-check("struktura zawiera tylko nazwy (bez id/statusów)",
-      sorted(req["structure"]["placements"][0]), ["ads", "name"])
+# Site per placement doszedł 17.09.2026 — bez niego model nie wie, że `Display` występuje
+# dwa razy, i nie ma czym wypełnić pola `site`. Statusy i id nadal są poza kontraktem:
+# agent ma decydować o STRUKTURZE, a nie o tym, co już jest zapisane w CM360.
+check("struktura zawiera nazwy i Site (bez id/statusów)",
+      sorted(req["structure"]["placements"][0]), ["ads", "name", "site"])
+check("...a ad nadal tylko nazwę i kreacje",
+      sorted(req["structure"]["placements"][0]["ads"][0]), ["creatives", "name"])
 check("słownik operacji zgodny ze schematem",
       req["allowed_ops"], A.INTENT_SCHEMA["properties"]["ops"]["items"]["properties"]["op"]["enum"])
 
@@ -499,6 +504,41 @@ for op in ({"op": "rename_placement", "placement": "Display", "to": "X"},
            {"op": "move_ad", "placement": "Display", "ad": "1200x628", "to": "Video"}):
     lg = A.apply_ops(DUP, [op])[1][0]
     check(f"{op['op']} też odmawia przy niejednoznacznej nazwie", lg["ok"], False)
+
+print("\nPOLE `site` ROZSTRZYGA KOLIZJĘ (17.09.2026) — koniec ograniczenia:")
+# Dotąd operacji na niejednoznacznej nazwie nie dało się wykonać w ogóle i trzeba było
+# poprawiać ręcznie w UI. Prawdziwą przyczyną nie było „lenistwo modelu", tylko to, że
+# struktura wysyłana do agenta NIE NIOSŁA Site per placement — nie miał czym rozstrzygnąć.
+wp_out, wp_log = A.apply_ops(DUP, [{"op": "add_ad", "site": "CG_WP",
+                                    "placement": "Display", "name": "750x300"}])
+check("ze wskazanym Site operacja przechodzi", wp_log[0]["ok"], True)
+check("...i ląduje we WŁAŚCIWYM źródle, nie w pierwszym z brzegu",
+      [[a["name"] for a in pl["ads"]] for pl in wp_out["placements"]],
+      [["1200x628"], ["970x200", "750x300"], ["1080x1080-kv1"]])
+fb_out = A.apply_ops(DUP, [{"op": "add_ad", "site": "CG_Facebook",
+                            "placement": "Display", "name": "750x300"}])[0]
+check("wskazanie drugiego Site trafia w ten drugi",
+      [a["name"] for pl in fb_out["placements"]
+       if pl["name"] == "Display" and pl["site"] == "CG_Facebook" for a in pl["ads"]],
+      ["1200x628", "750x300"])
+check("wielkość liter Site bez znaczenia (nazwy z konta bywają różnie zapisane)",
+      A.apply_ops(DUP, [{"op": "add_ad", "site": "cg_wp", "placement": "Display",
+                         "name": "300x250"}])[1][0]["ok"], True)
+# Site, którego w drzewie nie ma, to BŁĄD wprost — nie ciche „nic nie znalazłem",
+# bo wtedy operacja przepadłaby bez powodu możliwego do zrozumienia przez człowieka.
+bad_site = A.apply_ops(DUP, [{"op": "add_ad", "site": "CG_GDN", "placement": "Display",
+                              "name": "750x300"}])[1][0]
+check("Site spoza drzewa -> pominięcie z czytelnym powodem", bad_site["ok"], False)
+check("...powód mówi, gdzie ten placement NAPRAWDĘ stoi",
+      all(s in bad_site["detail"] for s in ("CG_Facebook", "CG_WP")), True)
+check("`site` przy nazwie jednoznacznej niczego nie psuje",
+      A.apply_ops(DUP, [{"op": "add_ad", "site": "CG_Facebook", "placement": "Video",
+                         "name": "1200x628-kv3"}])[1][0]["ok"], True)
+check("rename_placement z Site też trafia w jeden, nie w oba",
+      [pl["name"] for pl in A.apply_ops(
+          DUP, [{"op": "rename_placement", "site": "CG_WP", "placement": "Display",
+                 "to": "Display WP"}])[0]["placements"]],
+      ["Display", "Display WP", "Video"])
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

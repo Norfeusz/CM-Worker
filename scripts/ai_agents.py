@@ -115,12 +115,18 @@ INTENT_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object", "additionalProperties": False,
-                "required": ["op", "placement", "ad", "creative", "name", "to",
+                "required": ["op", "site", "placement", "ad", "creative", "name", "to",
                              "lpName", "lpUrl", "reason"],
                 "properties": {
                     "op": {"type": "string", "enum": OPS},
                     # Addressing fields; unused ones must be sent as null, not omitted —
                     # strict schemas cannot express "one of these shapes".
+                    # `site` rozstrzyga placementy o TEJ SAMEJ nazwie na różnych Site
+                    # (`Display` Facebooka obok `Display` WP to normalny kształt zlecenia
+                    # Meta+WP). Bez niego takie operacje trzeba było pomijać, bo zgadywanie
+                    # dokładało ady do cudzego źródła. Potrzebne TYLKO przy kolizji nazw —
+                    # w pozostałych przypadkach `null`.
+                    "site": {"type": ["string", "null"]},
                     "placement": {"type": ["string", "null"]},
                     "ad": {"type": ["string", "null"]},
                     "creative": {"type": ["string", "null"]},
@@ -249,6 +255,14 @@ as strictly as the schema itself:
 Note the pattern: `to` always holds the NEW value (a new name, or the target placement for
 move_ad). `name` holds the name of a node being CREATED. The node being acted upon is
 addressed by placement / ad / creative.
+
+`site` — ONLY when a placement name is ambiguous. One order can hold two placements with the
+SAME name on different Sites: `Display` on CG_Facebook next to `Display` on WP.pl is the
+normal shape of a Meta+WP order, not a mistake. When the structure shows the placement name
+more than once and your operation targets one of them, put its Site in `site` (copy the value
+from the structure verbatim). Leave `site` null whenever the name occurs once — it is a
+tie-breaker, not a required address. If you cannot tell which Site the user means, do NOT
+guess: leave the operation out and say so in `unclear`.
 
 You are given `zip` — the parsed delivery (dimensions, variants, per-unit type and folder).
 Use it whenever the remarks refer to what is in the package ("wymiary zgodne z zawartością
@@ -448,8 +462,13 @@ def build_intent_request(proposal, remarks, answers=None):
             "site": (proposal.get("site") or {}).get("name"),
             "line": {k: (proposal.get("line") or {}).get(k)
                      for k in ("number", "lpName", "creativeName", "url")},
+            # Site PER PLACEMENT, nie tylko jeden na zlecenie: bez tego model fizycznie nie
+            # wie, że `Display` występuje dwa razy, i nie ma jak wypełnić pola `site`.
+            # To była prawdziwa przyczyna przebiegu z 15.09.2026, w którym agent napisał
+            # „zakładam placement WP" — nie miał czym tego rozstrzygnąć.
             "placements": [{
                 "name": pl["name"],
+                "site": pl.get("site"),
                 "ads": [{"name": a["name"],
                          "creatives": [{"name": c["name"], "lpName": c.get("lpName")}
                                        for c in a["creatives"]]}
@@ -477,8 +496,8 @@ class Ambiguous(LookupError):
     """Nazwa wskazuje kilka węzłów naraz — patrz `_find_placement`."""
 
 
-def _find_placement(placements, name):
-    """Placement o tej nazwie — ALBO wyjątek, gdy nazwa wskazuje kilka.
+def _find_placement(placements, name, site=None):
+    """Placement o tej nazwie — ALBO wyjątek, gdy nazwa wskazuje kilka i nie podano Site.
 
     Jedno zlecenie może mieć dwa placementy o IDENTYCZNEJ nazwie na różnych Site:
     `Display` Facebooka obok `Display` WP to normalny kształt, nie błąd. Operacje agenta
@@ -489,16 +508,29 @@ def _find_placement(placements, name):
     trafić do placementu WP", a operacja wylądowała na Facebooku. Sam model zachował się
     poprawnie — zgłosił niejednoznaczność w `unclear`; to kod ją ignorował.
 
-    Przy niejednoznaczności NIE zgadujemy: operacja jest pomijana i raportowana, żeby
-    człowiek wskazał Site. Cicha zmiana w złym miejscu jest tu gorsza niż brak zmiany —
-    to ta sama zasada, przez którą creative adresujemy placementem i adem, nie nazwą.
+    Od 17.09.2026 operacja może NIEŚĆ Site (`site` w `INTENT_SCHEMA`) i wtedy kolizja jest
+    rozstrzygnięta wprost. Gdy Site nie podano, a nazwa wskazuje kilka — dalej NIE zgadujemy:
+    operacja jest pomijana i raportowana. Cicha zmiana w złym miejscu jest gorsza niż brak
+    zmiany — to ta sama zasada, przez którą creative adresujemy placementem i adem, nie nazwą.
+
+    Site porównujemy bez względu na wielkość liter, jak wszędzie przy nazwach z konta.
+    Podany Site, który nie pasuje do ŻADNEGO placementu tej nazwy, jest błędem wprost
+    (a nie cichym „nic nie znalazłem"): model podał coś, czego w drzewie nie ma.
     """
     hits = [x for x in placements if x["name"] == name]
+    if site:
+        want = str(site).strip().lower()
+        narrowed = [h for h in hits if str(h.get("site") or "").lower() == want]
+        if hits and not narrowed:
+            have = ", ".join(sorted({str(h.get("site") or "?") for h in hits}))
+            raise Ambiguous(
+                f"placement {name!r} nie stoi na Site {site!r} (jest na: {have})")
+        hits = narrowed
     if len(hits) > 1:
         sites = ", ".join(sorted({str(h.get("site") or "?") for h in hits}))
         raise Ambiguous(
             f"nazwa placementu {name!r} występuje {len(hits)} razy (Site: {sites}) — "
-            f"wskaż, o który chodzi")
+            f"wskaż Site w polu `site`")
     return hits[0] if hits else None
 
 
@@ -640,13 +672,15 @@ def apply_ops(proposal, ops):
         # na dwóch Site). Wtedy operacja jest pomijana z czytelnym powodem zamiast lądować
         # w pierwszym z brzegu — patrz `_find_placement`.
         try:
-            pl = _find_placement(pls, o["placement"]) if o.get("placement") else None
+            pl = (_find_placement(pls, o["placement"], o.get("site"))
+                  if o.get("placement") else None)
         except Ambiguous as e:
             skip(o, str(e))
             continue
 
         if kind == "rename_placement":
-            target = _find_placement(pls, o.get("placement") or o.get("name"))
+            target = _find_placement(pls, o.get("placement") or o.get("name"),
+                                     o.get("site"))
             if not target:
                 skip(o, f"nie ma placementu {o.get('placement') or o.get('name')!r}")
             elif not o.get("to"):
@@ -700,7 +734,10 @@ def apply_ops(proposal, ops):
                     done(o, f"ad {old!r} -> {o['to']!r} w {pl['name']!r}")
 
         elif kind == "move_ad":
-            src = _find_placement(pls, o.get("placement"))
+            src = _find_placement(pls, o.get("placement"), o.get("site"))
+            # cel `move_ad` adresujemy SAMA NAZWA: `site` opisuje miejsce, ktorego
+            # operacja dotyczy (zrodlo), a przy przenosinach miedzy Site nazwa
+            # placementu docelowego i tak musi byc jednoznaczna
             dst = _find_placement(pls, o.get("to") or o.get("name"))
             ad = _find(src["ads"], o.get("ad") or o.get("name")) if src else None
             if not src or not dst:

@@ -73,9 +73,9 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`, `test_promote.py`
-(**671/671 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+(**680/680 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
 że nic się nie popsuło). Rozkład: matcher 121, proposal 204, orchestrate 67, create_site 15,
-ai_agents 114, export_tags 23, parse_zip 61, guard 39, promote 27.
+ai_agents 123, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
 (`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
@@ -919,10 +919,29 @@ przez którą creative adresujemy placementem i adem, nie samą nazwą. Potwierd
 przebiegiem na żywym modelu: `add_ad`/`add_creative` pominięte, `delete_ad` na jednoznacznym
 `Video` wykonany, placement Facebooka nietknięty. 7 testów regresyjnych.
 
-**Znane ograniczenie**: przez agenta nie da się teraz dodać ada do placementu o
-niejednoznacznej nazwie — trzeba ręcznie w UI (tam placementy są rozróżnialne po Site).
-Rozwiązaniem byłoby pole `site` w `INTENT_SCHEMA`, ale to zmiana kontraktu + promptu
-+ testów; świadomie nie robione przy okazji.
+~~**Znane ograniczenie**: przez agenta nie da się dodać ada do placementu o niejednoznacznej
+nazwie~~ — **ZDJĘTE 17.09.2026**, patrz sekcja niżej.
+
+### Pole `site` w `INTENT_SCHEMA` (17.09.2026) — ograniczenie zdjęte
+Prawdziwą przyczyną NIE było „lenistwo modelu", tylko kontrakt: `build_intent_request`
+wysyłał **jeden Site na całe zlecenie**, a nie Site per placement. Model fizycznie nie
+mógł wiedzieć, że `Display` występuje dwa razy — i dlatego w sierpniu napisał „zakładam
+placement WP". Zachował się poprawnie na niepełnych danych, drugi raz w tym projekcie.
+
+Zmiana ma trzy części i żadna sama nie wystarcza:
+* `structure.placements[].site` w żądaniu — model widzi kolizję;
+* `site` w `INTENT_SCHEMA` (wymagane, nullowalne) + akapit w promptcie: wypełnij TYLKO przy
+  kolizji nazw, skopiuj wartość ze struktury, przy wątpliwości nie zgaduj → `unclear`;
+* `_find_placement(placements, name, site)` — Site zawęża, porównanie bez względu na
+  wielkość liter; Site spoza drzewa to **błąd wprost**, nie ciche „nie znalazłem".
+
+**Przebieg na żywym modelu** (wymagany po każdej zmianie kontraktu operacji — atrapa pisze
+odpowiedzi pod własne założenia): uwaga „na Display dla WP dodaj ad 300x600" → 1 operacja,
+0 pominiętych, ad wylądował na **CG_WP** (4→5 adów), a Display Facebooka został na 22.
+Ta sama uwaga BEZ wskazania Site → **0 operacji i pytanie od modelu** („Placement 'Display'
+występuje na dwóch serwisach… Na którym ma zostać dodany?"). To jest lepsze niż poprzednie
+zachowanie: wcześniej kod pomijał operację z technicznym powodem, teraz człowiek dostaje
+czytelne pytanie, a drzewo zostaje nietknięte tak samo.
 
 **Wniosek metodyczny, drugi raz w tej sesji**: weryfikacja na żywo znajduje rzeczy, których
 atrapa z definicji nie znajdzie — jej odpowiedzi pisze się pod własne założenia. Pierwszy raz
@@ -1157,7 +1176,7 @@ nie są śmieciem do sprzątnięcia, tylko znanym tłem przy kolejnych testach n
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
-   **Musi być 671/671.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 680/680.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest
