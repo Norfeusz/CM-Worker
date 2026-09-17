@@ -34,7 +34,7 @@ Dwa gotowe workflow, **identyczny kontrakt webhooka** — Python nie widzi róż
 
 | Plik | Dostawca | Credential (Header Auth) | Domyślny model |
 |---|---|---|---|
-| `cm-worker-agent-gemini.json` | Gemini API | nazwa `x-goog-api-key` | `gemini-3.5-flash` |
+| `cm-worker-agent-gemini.json` | Gemini API | nazwa `x-goog-api-key` | `gemini-3.8-flash` |
 | `cm-worker-agent.json` | Anthropic | nazwa `x-api-key` | `claude-opus-5` |
 
 Oba wymuszają schemat po stronie API (structured outputs), więc model **nie może** zwrócić

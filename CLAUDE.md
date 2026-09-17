@@ -234,6 +234,31 @@ obu dostawców bez tłumaczenia dialektu.
 - **Zero nowych zależności** — transport to `urllib`, walidacja schematu własna (stdlib),
   bo `serve.py` ma być uruchamialny bez pip install.
 
+### MODEL: `gemini-3.8-flash` (od 17.09.2026, zweryfikowany na żywo)
+Wcześniej `gemini-3.5-flash`. Zmiana jest zyskiem w obie strony, nie kompromisem: 3.8 Flash
+jest mocniejszy **i tańszy** ($0.75/$3.75 za 1M wobec $1.50/$9.00). Szczytem oferty jest
+`gemini-3.1-pro-preview` ($2/$12), ale świadomie go NIE bierzemy — jest w preview, więc
+zachowanie może się przesunąć bez naszej zmiany, w narzędziu piszącym do konta klienta,
+a rola modelu jest tu wąska (ciężką robotę robi kod deterministyczny).
+
+**Zmiana modelu to jedna stała w węźle „Zbuduj żądanie" — BEZ ponownego importu**, bo
+prompty i schematy jadą w payloadzie (`{system, schema, input}`). Import jest potrzebny
+tylko przy zmianie dostawcy albo kontraktu webhooka.
+
+Przebieg weryfikacyjny 17.09.2026 (paczka `nnw_meta.zip`, konto testowe):
+* rola (a): pewność 0.95, `group_mappings: []` — poprawnie nic nie wymyśliła;
+* rola (b) na uwadze JUŻ SPEŁNIONEJ: 0 operacji — też poprawnie;
+* rola (b) na uwadze wymuszającej zmiany: **3/3 operacji, 0 pominiętych**
+  (`rename_creative_all` na 28 adach, `delete_ad`, `add_ad`), nic poza celem nie ruszone;
+* bezpiecznik niejednoznaczności: operacja na `Display` (Facebook + WP) **pominięta
+  z powodem**, drzewo nietknięte.
+
+**Structured outputs na 3.8 Flash potwierdzone EMPIRYCZNIE** — dokumentacja modelu ich nie
+wymienia, więc jedynym dowodem jest przebieg: obie role przeszły `ai_agents.validate`.
+Druga runda była celowo zbudowana na trzech RÓŻNYCH typach operacji, bo przy zmianie modelu
+najbardziej kruche jest trafianie wartościami we właściwe pola generycznej koperty — na tym
+wywrócił się Gemini w sierpniu (patrz punkt 7 niżej) i atrapa webhooka tego nie złapie.
+
 ### Zwalidowane na żywo (30.07.2026, Gemini `gemini-3.5-flash` przez n8n Cloud)
 Obie role przetestowane end-to-end na prawdziwym modelu. Rzeczy, które kosztowały debugging:
 
