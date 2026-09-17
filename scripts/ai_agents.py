@@ -24,8 +24,12 @@ and each op maps 1:1 to something the UI can already do by hand.
 """
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import matcher          # noqa: E402  — tylko konwencje nazw; czysty stdlib, bez sieci
 
 MODEL_NOTE = "model wybierany w n8n (węzeł Chat Model) — nie tutaj"
 DEFAULT_TIMEOUT = int(os.environ.get("N8N_TIMEOUT", "120"))
@@ -764,7 +768,11 @@ def apply_ops(proposal, ops):
                 renamed = 0
                 for pl_ in pls:
                     for ad in pl_["ads"]:
-                        cr = _find(ad["creatives"], old)
+                        # Kreacja tej linii to nazwa ALBO jej datowana pochodna
+                        # (`linia1 17.09.26` powstaje, gdy ad już niósł linię). Bez tego
+                        # przemianowanie omijało ją i na adzie zostawała stara nazwa linii.
+                        cr = next((c for c in ad["creatives"]
+                                   if matcher.is_line_creative(c.get("name"), old)), None)
                         if not cr or _find(ad["creatives"], new):
                             continue
                         cr["name"] = new

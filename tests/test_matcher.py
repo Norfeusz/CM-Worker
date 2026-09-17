@@ -429,6 +429,21 @@ check("unreadable URL tokens + folder labels -> usable LP names",
       [l["lpName"] for l in ids],
       ["linia1-GDN-prospecting", "linia1-GDN-remarketing"])
 
+print("\nkreacja linii = nazwa ALBO jej datowana pochodna (zgłoszenie 17.09.2026):")
+# Arkusz z 17.09 wyszedł z adem `1200x1200` pod nazwą `linia3 17.09.26`, gdy cała reszta
+# zlecenia była już `linia5-Konto`: przemianowanie linii szukało dokładnej nazwy `linia3`,
+# a datowana pochodna jej nie ma. Rozpoznanie musi obejmować obie postaci.
+check("sama nazwa linii", M.is_line_creative("linia3", "linia3"), True)
+check("z datą", M.is_line_creative("linia3 17.09.26", "linia3"), True)
+check("z datą i licznikiem", M.is_line_creative("linia3 17.09.26 (2)", "linia3"), True)
+check("z etykietą też działa", M.is_line_creative("linia4-Konto 09.07.26", "linia4-Konto"), True)
+check("INNA linia o wspólnym przedrostku NIE jest pochodną",
+      M.is_line_creative("linia3-Konto", "linia3"), False)
+check("inny numer linii nie jest pochodną", M.is_line_creative("linia30", "linia3"), False)
+check("data musi mieć kształt daty", M.is_line_creative("linia3 cokolwiek", "linia3"), False)
+check("generowanie i rozpoznawanie trzymają jeden wzorzec",
+      M.is_line_creative(M.dated_creative("linia3", "17.09.26", 2), "linia3"), True)
+
 print("\nnieprzypisana PACZKA — pytamy zawsze, folder tylko gdy inny się dopasował:")
 # Reguła dla folderów („pytaj dopiero, gdy zip jest ewidentnie ułożony per strona")
 # dla paczek nie działa: osobny plik na linię robi się PO TO, żeby rozdzielić materiał,

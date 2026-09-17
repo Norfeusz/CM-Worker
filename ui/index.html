@@ -1510,6 +1510,28 @@
       // Nazwa linii musi przejść przez CAŁE drzewo, bo creative o tej nazwie wisi na
       // wielu adach — to ta sama semantyka, co `rename_creative_all` u agenta (b):
       // przemianuj tam, gdzie ta linia JEST, i nigdzie jej nie dokładaj.
+      // Kreacja z datą (`linia3 17.09.26`, z licznikiem `(2)`) to POCHODNA nazwy linii —
+      // powstaje przy budowaniu propozycji, gdy ad już niósł tę linię. Przy zmianie nazwy
+      // linii trzeba ją przemianować RAZEM z bazową, inaczej zostaje pod starą: w arkuszu
+      // z 17.09 ad `1200x1200` wyszedł jako `linia3 17.09.26`, gdy reszta była już
+      // `linia5-Konto`. Data przy tym ZNIKA — powodem jej istnienia była kolizja z kreacją
+      // stojącą już na adzie, a nowa nazwa linii żadnej kolizji nie ma.
+      const datedFrom = base => new RegExp(
+        '^' + String(base || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        + '(?: \\d{2}\\.\\d{2}\\.\\d{2}(?: \\(\\d+\\))?)?$');
+
+      // Ta sama kreacja dwa razy na jednym adzie to dublujący się tag; po przemianowaniu
+      // bazowej i datowanej na jedną nazwę mogą się spotkać, więc zwijamy.
+      function dedupeCreatives(np) {
+        np.placements.forEach(pl => pl.ads.forEach(a => {
+          const seen = new Set();
+          a.creatives = (a.creatives || []).filter(cr => {
+            if (seen.has(cr.name)) return false;
+            seen.add(cr.name); return true;
+          });
+        }));
+      }
+
       function updateLine(idx, next) {
         const np = clone();
         const cur = (np.lines && np.lines[idx]) || (idx === 0 ? np.line : null);
@@ -1524,10 +1546,12 @@
         if (idx === 0 && np.line && np.line !== cur) {
           np.line = { ...np.line, creativeName: newCre, lpName: newLp, url: newUrl };
         }
+        const wasLine = datedFrom(oldCre);
         np.placements.forEach(pl => pl.ads.forEach(a => a.creatives.forEach(cr => {
-          if (cr.name === oldCre) cr.name = newCre;
+          if (wasLine.test(cr.name)) cr.name = newCre;
           if (cr.lpName === oldLp) { cr.lpName = newLp; cr.lpUrl = newUrl; }
         })));
+        dedupeCreatives(np);
         commit(np);
       }
 
@@ -1556,8 +1580,9 @@
         // Adresujemy po KREACJI, której nazwę zmieniamy, a nie po starej nazwie LP:
         // te dwie nie muszą być zgodne (creative może mieć własne LP), a rozjazd
         // zostawiał kreację wskazującą starą stronę — wyłapane na żywo w przeglądarce.
+        const wasLine = datedFrom(oldCre);
         np.placements.forEach(pl => pl.ads.forEach(a => a.creatives.forEach(cr => {
-          if (cr.name === oldCre) {
+          if (wasLine.test(cr.name)) {
             cr.name = creativeName;
             cr.status = 'new';          // nowa kreacja, choćby ad był istniejący
             if (cr.lpName) cr.lpName = lpName;
@@ -1565,6 +1590,7 @@
             cr.lpName = lpName;
           }
         })));
+        dedupeCreatives(np);
         commit(np);
       }
 

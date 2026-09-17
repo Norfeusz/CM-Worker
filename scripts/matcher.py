@@ -80,6 +80,30 @@ def resolve_advertiser(url, rules):
     return best
 
 
+# Kreacja dołożona do ada, który TĘ LINIĘ już niesie, dostaje datę (`linia4-Konto 16.09.26`,
+# z licznikiem `(2)` przy powtórce tego samego dnia). Wzorzec żyje TUTAJ, bo potrzebują go
+# dwie strony: `build_proposal`, która te nazwy tworzy, i KAŻDA ścieżka zmieniająca nazwę
+# linii, która musi je przemianować razem z bazową. Bez tego datowana kreacja zostaje pod
+# starą nazwą — dokładnie to wyszło w arkuszu z 17.09.2026: ad `1200x1200` miał
+# `linia3 17.09.26`, gdy cała reszta zlecenia była już `linia5-Konto`.
+DATE_STAMP = "%d.%m.%y"
+_DATED = r"(?: \d{2}\.\d{2}\.\d{2}(?: \(\d+\))?)?$"
+
+
+def dated_creative(base, stamp, n=None):
+    """Nazwa datowanej kreacji tej linii."""
+    return f"{base} {stamp}" + (f" ({n})" if n else "")
+
+
+def is_line_creative(name, base):
+    """Czy `name` to kreacja linii `base` — sama nazwa albo jej DATOWANA pochodna.
+
+    Używane wszędzie, gdzie zmienia się nazwa linii: przemianowanie musi objąć obie postaci,
+    inaczej na adzie zostaje kreacja pod poprzednią nazwą linii.
+    """
+    return bool(re.match("^" + re.escape(base or "") + _DATED, name or ""))
+
+
 def advertiser_candidates(url, rules):
     """Wszyscy advertiserzy, których reguła pasuje do adresu — najdłuższy anchor pierwszy.
 

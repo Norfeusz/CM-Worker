@@ -214,6 +214,19 @@ check("...i nie dokłada linii9 tam, gdzie jej nie było",
 check("raport mówi wprost, że nic nie dołożono",
       "nic nie dołożono" in log[0]["detail"], True)
 
+# Kreacja DATOWANA (`linia8 17.09.26`) powstaje przy budowaniu propozycji, gdy ad już niósł
+# tę linię. Przemianowanie po dokładnej nazwie ją omijało i na adzie zostawała STARA nazwa
+# linii — dokładnie to wyszło w arkuszu klienta z 17.09.2026.
+dated = A.apply_ops(uneven, [])[0]
+dated["placements"][0]["ads"][0]["creatives"][0]["name"] = "linia8 17.09.26"
+np3, log3 = A.apply_ops(dated, [op("rename_creative_all", creative="linia8", to="linia10")])
+names3 = {c["name"] for pl in np3["placements"] for a in pl["ads"] for c in a["creatives"]}
+check("datowana pochodna też jest przemianowana", "linia8 17.09.26" in names3, False)
+check("...i traci datę — nowa nazwa linii nie ma z czym kolidować",
+      "linia10" in names3, True)
+check("...i nie zostaje ani jedna kreacja starej linii",
+      any(n.startswith("linia8") for n in names3), False)
+
 # 2) zła droga jest teraz zablokowana
 np2, log2 = A.apply_ops(uneven, [op("apply_creative_to_all",
                                     name="linia8-firmootwieracz")])

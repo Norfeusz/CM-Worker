@@ -73,9 +73,9 @@ jest powiązany z zadaniami agenta, nie z sesją użytkownika. Poproś użytkown
 Testy offline (DZIEWIĘĆ plików): `py tests/test_matcher.py`, `test_proposal.py`,
 `test_orchestrate.py`, `test_create_site.py`, `test_ai_agents.py`, `test_export_tags.py`,
 `test_parse_zip.py`, `test_guard.py`, `test_promote.py`
-(**652/652 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
-że nic się nie popsuło). Rozkład: matcher 113, proposal 204, orchestrate 59, create_site 15,
-ai_agents 111, export_tags 23, parse_zip 61, guard 39, promote 27.
+(**663/663 zielone na 17.09.2026** — uruchom je jako PIERWSZY krok sesji, żeby potwierdzić,
+że nic się nie popsuło). Rozkład: matcher 121, proposal 204, orchestrate 59, create_site 15,
+ai_agents 114, export_tags 23, parse_zip 61, guard 39, promote 27.
 `test_parse_zip.py` buduje paczki w locie (`zipfile` w temp), więc testuje realne kształty
 dostaw bez trzymania plików klienta w repo. `test_guard.py` sprawdza SAM BEZPIECZNIK
 (`cm_auth._check_uri`/`_check_body`) na kształtach adresów z realnych żądań — w tym profil
@@ -1016,6 +1016,27 @@ NOWA, więc wraca zwykły edytor („✏️ zmień adres / nazwę") i można wsz
 muszą być zgodne (creative bywa z własnym LP) i rozjazd zostawiał kreację wskazującą starą
 stronę. Wyłapane dopiero na żywo w przeglądarce, nie przy czytaniu kodu.
 
+### Zmiana nazwy linii MUSI objąć kreacje DATOWANE (zgłoszone z arkusza 17.09.2026)
+Kreacja z datą (`linia3 17.09.26`) powstaje przy BUDOWANIU propozycji, gdy ad już niósł tę
+linię. Gdy potem nazwa linii się zmienia, przemianowanie szukało dokładnej nazwy (`linia3`)
+i datowanej pochodnej nie obejmowało — w arkuszu 13 z 14 wierszy miało `linia5-Konto`,
+a ad `1200x1200` został z `linia3 17.09.26`, czyli z nazwą POPRZEDNIEJ linii.
+
+**Data przy tym znika**, i to jest decyzja usera, nie skrót: powodem jej istnienia była
+kolizja z kreacją stojącą już na adzie, a nowa nazwa linii żadnej kolizji nie ma — pod ten
+sam ad wolno podpiąć nową kreację z tym samym adresem, co stara.
+
+Wzorzec żyje w `matcher.is_line_creative()` / `matcher.dated_creative()` — w JEDNYM miejscu,
+bo potrzebują go trzy strony: `build_proposal` (tworzy te nazwy), `ai_agents.apply_ops`
+(`rename_creative_all` miał ten sam błąd) i UI (`convertLineToNew`, `updateLine`). Po
+przemianowaniu drzewo jest deduplikowane per ad — bazowa i datowana mogą spotkać się pod
+jedną nazwą, a to byłby zdublowany tag. Orkiestrator i tak ma bezpiecznik
+(`NO-OP … already assigned`), więc najgorszy przypadek to pominięcie, nie błąd zapisu.
+
+**Luka w pokryciu, świadoma**: wersja w UI (`ui/index.html`) nie ma testu, bo projekt nie ma
+harnessu dla JS. Testami przykryte są `matcher` i ścieżka agenta; wersję z UI sprawdzono na
+żywo w przeglądarce na odtworzonym stanie z arkusza.
+
 ## Kolejka — co dalej (w kolejności sugerowanego podejścia)
 
 0. ~~**WIELE LP W JEDNYM ZLECENIU**~~ — **ZROBIONE 05.08.2026.** `links[]` w API, pole na
@@ -1104,7 +1125,7 @@ stronę. Wyłapane dopiero na żywo w przeglądarce, nie przy czytaniu kodu.
 ## HANDOFF — pierwsze kroki w nowej sesji (stan na 28.08.2026, koniec dnia)
 
 1. `py tests/test_matcher.py` … i pozostałe **osiem** plików (lista wyżej).
-   **Musi być 652/652.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
+   **Musi być 663/663.** Jeśli nie — zatrzymaj się i zdiagnozuj, zanim cokolwiek dopiszesz.
 2. Serwer: poproś usera o **dwuklik `start.bat`**. **Nie stawiaj `serve.py` jako swojego
    zadania w tle na stałe** — jego czas życia jest powiązany z sesją agenta, padł już
    wielokrotnie. Własny proces tylko na czas konkretnej weryfikacji. **Restart jest

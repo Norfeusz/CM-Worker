@@ -141,11 +141,10 @@ def dated_creative_name(base, attached, today=None):
     trzeba znać: PONOWNE zbudowanie tej samej propozycji tego samego dnia też policzy się
     jako druga dostawa — dlatego widać to w planie przed zapisem.
     """
-    stamp = (today or datetime.date.today()).strftime("%d.%m.%y")
-    name = f"{base} {stamp}"
-    n = 2
+    stamp = (today or datetime.date.today()).strftime(matcher.DATE_STAMP)
+    name, n = matcher.dated_creative(base, stamp), 2
     while name in (attached or ()):
-        name = f"{base} {stamp} ({n})"
+        name = matcher.dated_creative(base, stamp, n)
         n += 1
     return name
 
